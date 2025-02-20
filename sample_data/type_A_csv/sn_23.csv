@@ -1,0 +1,4 @@
+BankId,BankgroupId,Capacity,ChannelId,ColumnId,CpuId,DimmId,FrequencyMHz,LogTime,Manufacturer,MaxSpeedMHz,McaBank,MciAddr,Model,PN,RankId,RetryRdErrLog,RetryRdErrLogParity,RowId,burst_info,deviceID,error_type_full_name,memory_type,region
+3,3,32,2,240,0,0,,1705435234,A,4000,P,142303977024,N,BX,0,107021,16384,88446,"{'0': [], '1': [], '2': [], '3': [14], '4': [], '5': [], '6': [], '7': []}",3,CE.READ,DDR4,O
+3,3,32,2,240,0,0,,1707609531,A,4000,P,142303977024,N,BX,0,107021,16384,88446,"{'0': [], '1': [], '2': [], '3': [14], '4': [], '5': [], '6': [], '7': []}",3,CE.READ,DDR4,O
+3,3,32,2,240,0,0,2600.0,1707609501,A,4000,P,142303977024,N,BX,0,107021,16384,88446,"{'0': [], '1': [], '2': [], '3': [14], '4': [], '5': [], '6': [], '7': []}",3,CE.READ,DDR4,O
