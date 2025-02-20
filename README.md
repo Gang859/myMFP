@@ -1,3 +1,7 @@
+比赛链接：[SmartMem (hwcloud-ras.github.io)](https://hwcloud-ras.github.io/SmartMem.github.io/)
+baseline github：https://github.com/hwcloud-RAS/SmartHW
+完整数据集：https://campustuberlinde-my.sharepoint.com/personal/qiao_yu_campus_tu-berlin_de/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fqiao%5Fyu%5Fcampus%5Ftu%2Dberlin%5Fde%2FDocuments%2Fstage1%5Ffeather%2E7z&parent=%2Fpersonal%2Fqiao%5Fyu%5Fcampus%5Ftu%2Dberlin%5Fde%2FDocuments&ga=1
+
 0. 代码文件夹 /mnt/zhangrengang/workspace/myMFP
     1. src/ # 源文件
     2. run/ # sh文件
