@@ -61,8 +61,8 @@ class Config(object):
     ticket_path: str = "To be filled"
 
     # 日期范围配置
-    train_date_range: tuple = ("2024-01-01", "2024-06-01")
-    test_data_range: tuple = ("2024-06-01", "2024-08-01")
+    train_date_range: tuple = ("2024-01-01", "2024-05-01")
+    test_data_range: tuple = ("2024-05-01", "2024-06-01")
 
     # 特征提取的时间间隔(秒), 为了更高的性能, 可以修改为 15 * ONE_MINUTE 或 30 * ONE_MINUTE
     feature_interval: int = ONE_HOUR
@@ -943,7 +943,7 @@ if __name__ == "__main__":
 
     # 根据测试阶段设置测试数据的时间范围
     if test_stage == 1:
-        test_data_range: tuple = ("2024-06-01", "2024-08-01")  # 第一阶段测试数据范围
+        test_data_range: tuple = ("2024-05-01", "2024-06-01")  # 第一阶段测试数据范围
     else:
         test_data_range: tuple = ("2024-08-01", "2024-10-01")  # 第二阶段测试数据范围
 
