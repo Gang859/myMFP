@@ -88,13 +88,15 @@ def calculate_f1_score(submission_path, failure_ticket_path, cutoff_date):
         'fn': fn
     }
 
-
+# test
 if __name__ == "__main__":
     # 设置输入参数
     submission_file = "submission.csv"
     failure_ticket_file = "failure_ticket.csv"
     # 只使用故障文件中cutoff_date之后的数据
     cutoff_date = "2024-05-01"
+
+
     # 计算F1分数
     results = calculate_f1_score(submission_file, failure_ticket_file, cutoff_date)
 
