@@ -95,6 +95,8 @@ if __name__ == "__main__":
     failure_ticket_file = "failure_ticket.csv"
     # 只使用故障文件中cutoff_date之后的数据
     cutoff_date = "2024-05-01"
+    
+    # git test
 
     # 计算F1分数
     results = calculate_f1_score(submission_file, failure_ticket_file, cutoff_date)
