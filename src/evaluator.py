@@ -95,14 +95,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--submission_file", type=str, required=True)
     parser.add_argument("--ticket_file", type=str, default="/home/zhangrengang/Doc/competition_data/stage1_feather/ticket.csv")
-    parser.add_argument("--cutoff_date", type=str, default="2024-05-01")
+    parser.add_argument("--cutoff_date", type=str, default="05")
     
     args = parser.parse_args()
     
     submission_file = args.submission_file
     failure_ticket_file = args.ticket_file
     # 只使用故障文件中cutoff_date之后的数据
-    cutoff_date = args.cutoff_date
+    cutoff_date = f"2024-{args.cutoff_date}-01"
 
     # 计算F1分数
     results = calculate_f1_score(submission_file, failure_ticket_file, cutoff_date)

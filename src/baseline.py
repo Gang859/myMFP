@@ -935,17 +935,24 @@ if __name__ == "__main__":
     parser.add_argument('--test_data_path', type=str, required=True)
     parser.add_argument('--ticket_path', type=str, required=True)
     parser.add_argument('--output_file', type=str, required=True)
+    parser.add_argument('--s1_train_start_month', type=str, default="01")
+    parser.add_argument('--s1_train_end_month', type=str, default="06")
+    parser.add_argument('--s1_test_end_month', type=str, default="08")
+    
     
     args = parser.parse_args()
     
     sn_type = args.sn_type  # SN 类型, A 或 B, 这里以 A 类型为例
     test_stage = args.test_stage  # 测试阶段, 1 或 2, 这里以 Stage 1 为例
 
+    # 设置训练数据的时间范围
+    train_data_range: tuple = (f"2024-{args.s1_train_start_month}-01", f"2024-{args.s1_train_end_month}-01")
     # 根据测试阶段设置测试数据的时间范围
     if test_stage == 1:
-        test_data_range: tuple = ("2024-05-01", "2024-06-01")  # 第一阶段测试数据范围
+        test_data_range: tuple = (f"2024-{args.s1_train_end_month}-01", f"2024-{args.s1_test_end_month}-01")  # 第一阶段测试数据范围
     else:
         test_data_range: tuple = ("2024-08-01", "2024-10-01")  # 第二阶段测试数据范围
+        
 
     # 初始化配置类 Config，设置数据路径、特征路径、训练数据路径、测试数据路径等
     config = Config(
@@ -959,6 +966,7 @@ if __name__ == "__main__":
         test_data_path=os.path.join(
             args.test_data_path, f"type_{sn_type}_{test_stage}"  # 生成的测试数据路径
         ),
+        train_date_range=train_data_range,
         test_data_range=test_data_range,  # 测试数据时间范围
         ticket_path=args.ticket_path,  # 维修单路径
     )

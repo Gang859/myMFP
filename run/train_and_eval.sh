@@ -10,14 +10,12 @@ python /mnt/zhangrengang/workspace/myMFP/src/baseline.py \
   --test_data_path /home/zhangrengang/Doc/release_features_${train_start_month}-${test_end_month}/test_data \
   --ticket_path /home/zhangrengang/Doc/competition_data/stage1_feather/ticket.csv \
   --output_file /mnt/zhangrengang/workspace/myMFP/output/submission_1.csv \
+  --s1_train_start_month ${train_start_month} \
+  --s1_train_end_month ${train_end_month} \
+  --s1_test_end_month ${test_end_month} \
   > /mnt/zhangrengang/workspace/myMFP/run_log/baseline.log
 
-# sample dataset
-# python /mnt/zhangrengang/workspace/myMFP/src/baseline.py \
-#   --data_path /mnt/zhangrengang/workspace/myMFP/sample_data \
-#   --feature_path /mnt/zhangrengang/workspace/myMFP/sample_data/release_features_${train_start_month}-${test_end_month}/combined_sn_feature \
-#   --train_data_path /mnt/zhangrengang/workspace/myMFP/sample_data/train_data \
-#   --test_data_path /mnt/zhangrengang/workspace/myMFP/sample_data/test_data \
-#   --ticket_path /mnt/zhangrengang/workspace/myMFP/sample_data/ticket.csv \
-#   --output_file /mnt/zhangrengang/workspace/myMFP/output/submission_1.csv \
-#   > /mnt/zhangrengang/workspace/myMFP/run_log/baseline.log
+python /mnt/zhangrengang/workspace/myMFP/src/evaluator.py \
+  --submission_file /mnt/zhangrengang/workspace/myMFP/output/submission_1.csv \
+  --cutoff_date ${train_end_month} \
+  > /mnt/zhangrengang/workspace/myMFP/run_log/eval.log

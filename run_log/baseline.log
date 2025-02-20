@@ -1,5 +1,5 @@
 [LightGBM] [Info] Number of positive: 93880, number of negative: 2726780
-[LightGBM] [Info] Auto-choosing row-wise multi-threading, the overhead of testing was 0.151077 seconds.
+[LightGBM] [Info] Auto-choosing row-wise multi-threading, the overhead of testing was 0.145887 seconds.
 You can set `force_row_wise=true` to remove the overhead.
 And if memory is not enough, you can set `force_col_wise=true`.
 [LightGBM] [Info] Total Bins 5343
