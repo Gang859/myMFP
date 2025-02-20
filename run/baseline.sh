@@ -1,7 +1,7 @@
 # full dataset
 python /mnt/zhangrengang/workspace/myMFP/src/baseline.py \
   --data_path /home/zhangrengang/Doc/competition_data/stage1_feather \
-  --feature_path /home/zhangrengang/Doc/release_features_01-06/combined_sn_feature \
+  --feature_path /home/zhangrengang/Doc/release_features_01-06/combined_sn_feature_ori \
   --train_data_path /home/zhangrengang/Doc/release_features_01-06/train_data \
   --test_data_path /home/zhangrengang/Doc/release_features_01-06/test_data \
   --ticket_path /home/zhangrengang/Doc/competition_data/stage1_feather/ticket.csv \

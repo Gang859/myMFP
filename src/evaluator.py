@@ -1,5 +1,6 @@
 import pandas as pd
 from datetime import datetime
+import argparse
 
 
 def calculate_f1_score(submission_path, failure_ticket_path, cutoff_date):
@@ -85,17 +86,23 @@ def calculate_f1_score(submission_path, failure_ticket_path, cutoff_date):
         'f1_score': f1_score,
         'tp': tp,
         'fp': fp,
-        'fn': fn
+        'fn': fn,
     }
 
 # test
 if __name__ == "__main__":
     # 设置输入参数
-    submission_file = "submission.csv"
-    failure_ticket_file = "failure_ticket.csv"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--submission_file", type=str, required=True)
+    parser.add_argument("--ticket_file", type=str, default="/home/zhangrengang/Doc/competition_data/stage1_feather/ticket.csv")
+    parser.add_argument("--cutoff_date", type=str, default="2024-05-01")
+    
+    args = parser.parse_args()
+    
+    submission_file = args.submission_file
+    failure_ticket_file = args.ticket_file
     # 只使用故障文件中cutoff_date之后的数据
-    cutoff_date = "2024-05-01"
-
+    cutoff_date = args.cutoff_date
 
     # 计算F1分数
     results = calculate_f1_score(submission_file, failure_ticket_file, cutoff_date)
@@ -107,3 +114,4 @@ if __name__ == "__main__":
     print(f"True Positives: {results['tp']}")
     print(f"False Positives: {results['fp']}")
     print(f"False Negatives: {results['fn']}")
+    print(f"[\t {results['tp']} \t {results['fp']} \n \t {results['fn']} \t TN ]")
