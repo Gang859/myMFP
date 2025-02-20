@@ -88,7 +88,7 @@ def calculate_f1_score(submission_path, failure_ticket_path, cutoff_date):
         'fn': fn
     }
 
-
+# test
 if __name__ == "__main__":
     # 设置输入参数
     submission_file = "submission.csv"
