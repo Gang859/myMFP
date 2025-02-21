@@ -27,7 +27,7 @@ def convert_feather_to_csv(input_path, output_path):
         print(f"转换失败：{str(e)}")
 
 if __name__ == "__main__":
-    for feather_file in glob.glob("/mnt/zhangrengang/workspace/myMFP/sample_data/release_features/combined_sn_feature/type_A/*.feather"):
+    for feather_file in glob.glob("/mnt/zhangrengang/workspace/myMFP/sample_data/train_data/type_A/*.feather"):
         csv_file = feather_file.replace(".feather", ".csv")
         csv_file = csv_file.replace("type_A", "type_A_csv")
         convert_feather_to_csv(feather_file, csv_file)
