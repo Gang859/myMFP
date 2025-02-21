@@ -840,10 +840,10 @@ class MFPmodel(object):
         self.test_data_path = config.test_data_path
         self.model_params = {
             "learning_rate": 0.02,
-            "n_estimators": 1000,
+            "n_estimators": 500,
             "max_depth": 8,
-            "num_leaves": 31,
-            "min_child_samples": 32,
+            "num_leaves": 20,
+            "min_child_samples": 20,
             "verbose": 1,
         }
         self.model = LGBMClassifier(**self.model_params)

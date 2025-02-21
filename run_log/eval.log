@@ -1,8 +1,8 @@
-Precision: 0.0976
-Recall: 0.3234
-F1 Score: 0.1500
-True Positives: 54
-False Positives: 499
-False Negatives: 113
-[	 54 	 499 
- 	 113 	 TN ]
+Precision: 0.0101
+Recall: 0.2275
+F1 Score: 0.0194
+True Positives: 38
+False Positives: 3718
+False Negatives: 129
+[	 38 	 3718 
+ 	 129 	 TN ]

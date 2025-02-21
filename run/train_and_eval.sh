@@ -1,7 +1,7 @@
 train_start_month="01"
 train_end_month="05"
 test_end_month="06"
-output_file="/mnt/zhangrengang/workspace/myMFP/output/submission_1.csv"
+output_file="/mnt/zhangrengang/workspace/myMFP/output/submission_2.csv"
 
 # full dataset
 python /mnt/zhangrengang/workspace/myMFP/src/baseline.py \
@@ -14,9 +14,9 @@ python /mnt/zhangrengang/workspace/myMFP/src/baseline.py \
   --s1_train_start_month ${train_start_month} \
   --s1_train_end_month ${train_end_month} \
   --s1_test_end_month ${test_end_month} \
-  > /mnt/zhangrengang/workspace/myMFP/run_log/baseline.log
+  > /mnt/zhangrengang/workspace/myMFP/run_log/baseline_2.log
 
 python /mnt/zhangrengang/workspace/myMFP/src/evaluator.py \
   --submission_file ${output_file} \
   --cutoff_date ${train_end_month} \
-  > /mnt/zhangrengang/workspace/myMFP/run_log/eval.log
+  > /mnt/zhangrengang/workspace/myMFP/run_log/eval_2.log
