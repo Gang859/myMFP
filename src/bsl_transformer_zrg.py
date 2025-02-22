@@ -19,13 +19,13 @@ ONE_HOUR = 3600  # 一小时的秒数（60秒 * 60分钟）
 ONE_DAY = 86400  # 一天的秒数（60秒 * 60分钟 * 24小时）
 
 processed_df_files_dir = "/mnt/zhangrengang/data/processed_df"
-windows_json_files_dir = "/mnt/zhangrengang/data/dump/windows"
-pos_windows_json_files_dir = "/mnt/zhangrengang/data/dump/pos_windows"
-neg_windows_json_files_dir = "/mnt/zhangrengang/data/dump/neg_windows"
-test_windows_json_files_dir = "/mnt/zhangrengang/data/dump/test_windows"
-processed_pos_windows_dir = "/mnt/zhangrengang/data/dump/pos_windows_feature"
-processed_neg_windows_dir = "/mnt/zhangrengang/data/dump/neg_windows_feature"
-processed_test_windows_dir = "/mnt/zhangrengang/data/dump/test_windows_feature"
+windows_json_files_dir = "/mnt/zhangrengang/data/win30m_ds/windows"
+pos_windows_json_files_dir = "/mnt/zhangrengang/data/win30m_ds/pos_windows"
+neg_windows_json_files_dir = "/mnt/zhangrengang/data/win30m_ds/neg_windows"
+test_windows_json_files_dir = "/mnt/zhangrengang/data/win30m_ds/test_windows"
+processed_pos_windows_dir = "/mnt/zhangrengang/data/win30m_ds/pos_windows_feature"
+processed_neg_windows_dir = "/mnt/zhangrengang/data/win30m_ds/neg_windows_feature"
+processed_test_windows_dir = "/mnt/zhangrengang/data/win30m_ds/test_windows_feature"
 
 os.makedirs(processed_df_files_dir, exist_ok=True)
 os.makedirs(windows_json_files_dir, exist_ok=True)

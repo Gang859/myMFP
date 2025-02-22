@@ -27,10 +27,14 @@ def convert_feather_to_csv(input_path, output_path):
         print(f"转换失败：{str(e)}")
 
 if __name__ == "__main__":
-    for feather_file in glob.glob("/mnt/zhangrengang/workspace/myMFP/sample_data/train_data/type_A/*.feather"):
+    counter = 0
+    for feather_file in glob.glob("/mnt/zhangrengang/data/processed_df/*.feather"):
         csv_file = feather_file.replace(".feather", ".csv")
-        csv_file = csv_file.replace("type_A", "type_A_csv")
+        csv_file = csv_file.replace("data/", "tmp/")
         convert_feather_to_csv(feather_file, csv_file)
+        counter += 1
+        if counter > 3:
+            break
         
     # # 设置命令行参数
     # parser = argparse.ArgumentParser(description='将.feather文件转换为.csv文件')
