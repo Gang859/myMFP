@@ -1,3 +1,0 @@
-BankId,BankgroupId,Capacity,ChannelId,ColumnId,CpuId,DimmId,FrequencyMHz,LogTime,Manufacturer,MaxSpeedMHz,McaBank,MciAddr,Model,PN,RankId,RetryRdErrLog,RetryRdErrLogParity,RowId,burst_info,deviceID,error_type_full_name,memory_type,region
-1,2,32,0,360,0,0,,1704096796,A,4000,P,111796794752,N,AZ,0,47119,2097216,70126,,,CE.READ,DDR4,L
-1,2,32,0,360,0,0,,1704098592,A,4000,P,111796828544,N,AZ,0,47119,2097216,70126,,,CE.READ,DDR4,L
