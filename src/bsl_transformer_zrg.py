@@ -19,13 +19,13 @@ ONE_HOUR = 3600  # 一小时的秒数（60秒 * 60分钟）
 ONE_DAY = 86400  # 一天的秒数（60秒 * 60分钟 * 24小时）
 
 processed_df_files_dir = "/mnt/zhangrengang/data/processed_df"
-windows_json_files_dir = "/mnt/zhangrengang/data/win30m_ds/windows"
-pos_windows_json_files_dir = "/mnt/zhangrengang/data/win30m_ds/pos_windows"
-neg_windows_json_files_dir = "/mnt/zhangrengang/data/win30m_ds/neg_windows"
-test_windows_json_files_dir = "/mnt/zhangrengang/data/win30m_ds/test_windows"
-processed_pos_windows_dir = "/mnt/zhangrengang/data/win30m_ds/pos_windows_feature"
-processed_neg_windows_dir = "/mnt/zhangrengang/data/win30m_ds/neg_windows_feature"
-processed_test_windows_dir = "/mnt/zhangrengang/data/win30m_ds/test_windows_feature"
+windows_json_files_dir = "/mnt/zhangrengang/data/dump/windows"
+pos_windows_json_files_dir = "/mnt/zhangrengang/data/dump/pos_windows"
+neg_windows_json_files_dir = "/mnt/zhangrengang/data/dump/neg_windows"
+test_windows_json_files_dir = "/mnt/zhangrengang/data/dump/test_windows"
+processed_pos_windows_dir = "/mnt/zhangrengang/data/dump/pos_windows_feature"
+processed_neg_windows_dir = "/mnt/zhangrengang/data/dump/neg_windows_feature"
+processed_test_windows_dir = "/mnt/zhangrengang/data/dump/test_windows_feature"
 
 os.makedirs(processed_df_files_dir, exist_ok=True)
 os.makedirs(windows_json_files_dir, exist_ok=True)
@@ -948,7 +948,6 @@ def process_windows(windows_dir: str, processed_df_dir: str, output_dir:str, chu
         processed_df = feather.read_dataframe(os.path.join(processed_df_dir, sn_name + '.feather'))
         for i in range(len(windows_dict["start_indices"])):
             win_df = processed_df.iloc[windows_dict["start_indices"][i]:windows_dict["end_indices"][i]]
-            # 统计window长度
             
             win_df = win_df.assign(
                 Count=win_df.groupby("position_and_parity")[
@@ -960,8 +959,11 @@ def process_windows(windows_dir: str, processed_df_dir: str, output_dir:str, chu
             win_df = win_df.drop_duplicates(
                 subset="position_and_parity", keep="first"
             )
+            
+            # 统计window长度
             lens = win_df.shape[0]
             win_df = win_df.assign(Lens = lens)
+            
             win_df = win_df.drop('CellId', axis=1).drop('position_and_parity', axis=1)
             window_list = win_df.values.tolist()
             buffer_dict["features"].append(window_list)
