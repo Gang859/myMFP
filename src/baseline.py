@@ -33,14 +33,15 @@ class Config(object):
     TIME_WINDOW_SIZE_MAP: dict = field(
         default_factory=lambda: {
             15 * ONE_MINUTE: "15m",
-            1 * ONE_HOUR: "1h"
+            1 * ONE_HOUR: "1h",
+            6 * ONE_HOUR: "6h"
         },
         init=False,
     )
 
     # 与时间相关的列表, 存储常用的时间间隔(秒)
     TIME_RELATED_LIST: List[int] = field(
-        default_factory=lambda: [15 * ONE_MINUTE, ONE_HOUR],
+        default_factory=lambda: [15 * ONE_MINUTE, ONE_HOUR, 6 * ONE_HOUR],
         init=False,
     )
 
@@ -65,7 +66,7 @@ class Config(object):
     test_data_range: tuple = ("2024-05-01", "2024-06-01")
 
     # 特征提取的时间间隔(秒), 为了更高的性能, 可以修改为 15 * ONE_MINUTE 或 30 * ONE_MINUTE
-    feature_interval: int = ONE_HOUR
+    feature_interval: int = 15 * ONE_MINUTE
 
 
 class FeatureFactory(object):

@@ -33,14 +33,15 @@ class Config(object):
     TIME_WINDOW_SIZE_MAP: dict = field(
         default_factory=lambda: {
             15 * ONE_MINUTE: "15m",
-            1 * ONE_HOUR: "1h"
+            1 * ONE_HOUR: "1h",
+            6 * ONE_HOUR: "6h"
         },
         init=False,
     )
 
     # 与时间相关的列表, 存储常用的时间间隔(秒)
     TIME_RELATED_LIST: List[int] = field(
-        default_factory=lambda: [15 * ONE_MINUTE, ONE_HOUR],
+        default_factory=lambda: [15 * ONE_MINUTE, ONE_HOUR, 6 * ONE_HOUR],
         init=False,
     )
 
@@ -51,7 +52,7 @@ class Config(object):
     USE_MULTI_PROCESS: bool = field(default=True, init=False)
 
     # 如果使用多进程, 并行时 worker 的数量
-    WORKER_NUM: int = field(default=16, init=False)
+    WORKER_NUM: int = field(default=72, init=False)
 
     # 数据路径配置, 分别是原始数据集路径、生成的特征路径、处理后训练集特征路径、处理后测试集特征路径、维修单路径
     data_path: str = "To be filled"
@@ -65,8 +66,10 @@ class Config(object):
     test_data_range: tuple = ("2024-05-01", "2024-06-01")
 
     # 特征提取的时间间隔(秒), 为了更高的性能, 可以修改为 15 * ONE_MINUTE 或 30 * ONE_MINUTE
-    feature_interval: int = ONE_HOUR
+    feature_interval: int = 15 * ONE_MINUTE
 
+    # dump json path
+    s1_window_data_json : str = "To be filled"
 
 class FeatureFactory(object):
     """
@@ -539,15 +542,62 @@ class FeatureFactory(object):
             with Pool(worker_num) as pool:
                 list(
                     tqdm(
-                        pool.imap(self.process_single_sn, sn_files),
+                        pool.imap(self.process_single_sn_for_transfomer, sn_files),
                         total=len(sn_files),
                         desc="Generating features",
                     )
                 )
         else:
             for sn_file in tqdm(sn_files, desc="Generating features"):
-                self.process_single_sn(sn_file)
+                self.process_single_sn_for_transfomer(sn_file)
+                
 
+
+    def process_single_sn_for_transfomer(self, sn_file: str) -> NoReturn:
+        id = 0
+        zrg_dict = {"features":[],
+                    "lable":[],
+                    "length": [],
+                    "id":[],
+                    "name": [],
+                    "Window_LogTime": []
+                    }
+
+        # 获取处理后的 DataFrame
+        new_df = self._get_processed_df(sn_file)
+
+        # 根据生成特征的间隔, 计算时间索引
+        new_df["time_index"] = new_df["LogTime"] // self.config.feature_interval
+        log_times = new_df["LogTime"].values
+
+        # 计算每个时间窗口的结束时间和开始时间, 每次生成特征最多用 max_window_size 的历史数据
+        max_window_size = max(self.config.TIME_RELATED_LIST)
+        window_end_times = new_df.groupby("time_index")["LogTime"].max().values
+        window_start_times = window_end_times - max_window_size
+
+        # 根据时间窗口的起始和结束时间, 找到对应的数据索引
+        start_indices = np.searchsorted(log_times, window_start_times, side="left")
+        end_indices = np.searchsorted(log_times, window_end_times, side="right")
+
+        for start_idx, end_idx, end_time in zip(
+            start_indices, end_indices, window_end_times
+        ):
+            window_name = sn_file.split(".")[0]+"_"+str(start_idx)+"_"+str(end_idx)
+            window_df = new_df.iloc[start_idx:end_idx]
+            window_list = window_df.copy().drop('CellId', axis=1).drop('position_and_parity', axis=1).values.tolist()
+            zrg_dict["features"].append(window_list)
+            zrg_dict["lable"].append(0)
+            zrg_dict["length"].append(len(window_list))
+            zrg_dict["id"].append(id)
+            zrg_dict["name"].append(window_name)
+            assert(max(np.array(window_list)[:,0]) == window_list[-1][0])
+            zrg_dict["Window_LogTime"].append(int(max(np.array(window_list)[:,0])))
+            id+=1
+        import json
+        with open(f"/mnt/zhangrengang/workspace/myMFP/dump/feature/{sn_file.split(".")[0]}.json","w") as zrg_file:
+            json_str = json.dumps(zrg_dict,indent=1)
+            zrg_file.write(json_str)
+            zrg_file.close()
 
 class DataGenerator(metaclass=abc.ABCMeta):
     """
@@ -648,7 +698,7 @@ class DataGenerator(metaclass=abc.ABCMeta):
         """
 
         file_list = os.listdir(self.feature_path)
-        file_list = [x for x in file_list if x.endswith(".feather")]
+        file_list = [x for x in file_list if x.endswith(".json")]
         file_list.sort()
 
         if self.config.USE_MULTI_PROCESS:
@@ -696,16 +746,14 @@ class DataGenerator(metaclass=abc.ABCMeta):
 
         raise NotImplementedError("Subclasses should implement this method")
 
-
 class PositiveDataGenerator(DataGenerator):
-    def _process_file(self, sn_file: str) -> Union[pd.DataFrame, None]:
+    def _process_file2(self, sn_file: str) -> Union[pd.DataFrame, None]:
         """
         处理单个文件, 获取正样本数据
 
         :param sn_file: 文件名
         :return: 处理后的 DataFrame
         """
-
         sn_name = os.path.splitext(sn_file)[0]
         if self.ticket_sn_map.get(sn_name):
             # 设正样本的时间范围为维修单时间的前 30 天
@@ -725,6 +773,51 @@ class PositiveDataGenerator(DataGenerator):
 
         # 如果 SN 名称不在维修单中, 则返回 None
         return None
+    
+    def _process_file(self, sn_file: str):
+        """
+        处理单个文件, 获取正样本数据
+
+        :param sn_file: 文件名
+        :return: 处理后的 DataFrame
+        """
+        cur_sn_dict = dict()
+        with open(f"/mnt/zhangrengang/workspace/myMFP/dump/feature/{sn_file.split(".")[0]+".json"}","r") as file:
+            import json
+            cur_sn_dict = json.load(file)
+            file.close()
+            
+        cur_positive_sn_dict = {"features":[],
+                    "lable":[],
+                    "length": [],
+                    "id":[],
+                    "name": [],
+                    "Window_LogTime": []
+                    }
+        sn_name = os.path.splitext(sn_file)[0]
+        if self.ticket_sn_map.get(sn_name):
+            # 设正样本的时间范围为维修单时间的前 30 天
+            end_time = self.ticket_sn_map.get(sn_name)
+            start_time = end_time - 30 * ONE_DAY
+
+            for i in range(len(cur_sn_dict["Window_LogTime"])):
+                if (cur_sn_dict["Window_LogTime"][i]<= end_time) & (cur_sn_dict["Window_LogTime"][i] >= start_time):
+                    cur_positive_sn_dict["features"].append(cur_sn_dict["features"][i])
+                    cur_positive_sn_dict["lable"].append(1)
+                    cur_positive_sn_dict["length"].append(cur_sn_dict["length"][i])
+                    cur_positive_sn_dict["id"].append(cur_sn_dict["id"][i])
+                    cur_positive_sn_dict["name"].append(cur_sn_dict["name"][i])
+                    cur_positive_sn_dict["Window_LogTime"].append(cur_sn_dict["Window_LogTime"][i])
+                    
+            import json
+            with open(f"/mnt/zhangrengang/workspace/myMFP/dump/positive_feature_with_label/{sn_file.split(".")[0]}.json","w") as zrg_file:
+                json_str = json.dumps(cur_positive_sn_dict,indent=1)
+                zrg_file.write(json_str)
+                zrg_file.close()
+                
+            return 
+
+        return None
 
     def generate_and_save_data(self) -> NoReturn:
         """
@@ -732,13 +825,12 @@ class PositiveDataGenerator(DataGenerator):
         """
 
         data_all = self._get_data()
-        feather.write_dataframe(
-            data_all, os.path.join(self.train_data_path, "positive_train.feather")
-        )
-
+        # feather.write_dataframe(
+        #     data_all, os.path.join(self.train_data_path, "positive_train.feather")
+        # )
 
 class NegativeDataGenerator(DataGenerator):
-    def _process_file(self, sn_file: str) -> Union[pd.DataFrame, None]:
+    def _process_file2(self, sn_file: str) -> Union[pd.DataFrame, None]:
         """
         处理单个文件, 获取负样本数据
 
@@ -766,16 +858,62 @@ class NegativeDataGenerator(DataGenerator):
         # 如果 SN 名称在维修单中, 则返回 None
         return None
 
+    def _process_file(self, sn_file: str) :
+        """
+        处理单个文件, 获取负样本数据
+
+        :param sn_file: 文件名
+        :return: 处理后的 DataFrame
+        """
+        cur_sn_dict = dict()
+        with open(f"/mnt/zhangrengang/workspace/myMFP/dump/feature/{sn_file.split(".")[0]+".json"}","r") as file:
+            import json
+            cur_sn_dict = json.load(file)
+            file.close()
+            
+        cur_negtive_sn_dict = {"features":[],
+                    "lable":[],
+                    "length": [],
+                    "id":[],
+                    "name": [],
+                    "Window_LogTime": []
+                    }
+        
+        sn_name = os.path.splitext(sn_file)[0]
+        if not self.ticket_sn_map.get(sn_name):
+
+            # 设负样本的时间范围为某段连续的 30 天
+            end_time = self.train_end_date - 30 * ONE_DAY
+            start_time = self.train_end_date - 60 * ONE_DAY
+
+            for i in range(len(cur_sn_dict["Window_LogTime"])):
+                if (cur_sn_dict["Window_LogTime"][i]  <= end_time) & (cur_sn_dict["Window_LogTime"][i] >= start_time) :
+                    cur_negtive_sn_dict["features"].append(cur_sn_dict["features"][i])
+                    cur_negtive_sn_dict["lable"].append(0)
+                    cur_negtive_sn_dict["length"].append(cur_sn_dict["length"][i])
+                    cur_negtive_sn_dict["id"].append(cur_sn_dict["id"][i])
+                    cur_negtive_sn_dict["name"].append(cur_sn_dict["name"][i])
+                    cur_negtive_sn_dict["Window_LogTime"].append(cur_sn_dict["Window_LogTime"][i])
+                    
+            import json
+            with open(f"/mnt/zhangrengang/workspace/myMFP/dump/negtive_feature_with_label/{sn_file.split(".")[0]}.json","w") as zrg_file:
+                json_str = json.dumps(cur_negtive_sn_dict,indent=1)
+                zrg_file.write(json_str)
+                zrg_file.close()
+                 
+
+        # 如果 SN 名称在维修单中, 则返回 None
+        return None
+
     def generate_and_save_data(self) -> NoReturn:
         """
         生成并保存负样本数据
         """
 
         data_all = self._get_data()
-        feather.write_dataframe(
-            data_all, os.path.join(self.train_data_path, "negative_train.feather")
-        )
-
+        # feather.write_dataframe(
+        #     data_all, os.path.join(self.train_data_path, "negative_train.feather")
+        # )
 
 class TestDataGenerator(DataGenerator):
     @staticmethod
@@ -822,7 +960,6 @@ class TestDataGenerator(DataGenerator):
             feather.write_dataframe(
                 chunk, os.path.join(self.test_data_path, f"res_{index}.feather")
             )
-
 
 class MFPmodel(object):
     """
@@ -938,6 +1075,7 @@ if __name__ == "__main__":
     parser.add_argument('--s1_train_start_month', type=str, default="01")
     parser.add_argument('--s1_train_end_month', type=str, default="06")
     parser.add_argument('--s1_test_end_month', type=str, default="08")
+    parser.add_argument('--s1_window_data_json', type=str, required=True)
     
     
     args = parser.parse_args()
@@ -957,9 +1095,8 @@ if __name__ == "__main__":
     # 初始化配置类 Config，设置数据路径、特征路径、训练数据路径、测试数据路径等
     config = Config(
         data_path=os.path.join(args.data_path, f"type_{sn_type}"),  # 原始数据集路径
-        feature_path=os.path.join(
-            args.feature_path, f"type_{sn_type}"  # 生成的特征数据路径
-        ),
+        feature_path=args.feature_path   # 生成的特征数据路径
+        ,
         train_data_path=os.path.join(
             args.train_data_path, f"type_{sn_type}"  # 生成的训练数据路径
         ),
@@ -969,6 +1106,7 @@ if __name__ == "__main__":
         train_date_range=train_data_range,
         test_data_range=test_data_range,  # 测试数据时间范围
         ticket_path=args.ticket_path,  # 维修单路径
+        s1_window_data_json = args.s1_window_data_json
     )
     
     # 初始化特征工厂类 FeatureFactory，用于处理 SN 文件并生成特征
@@ -984,8 +1122,8 @@ if __name__ == "__main__":
     negative_data_generator.generate_and_save_data()
 
     # 初始化测试数据生成器，生成并保存测试数据
-    test_data_generator = TestDataGenerator(config)
-    test_data_generator.generate_and_save_data()
+    # test_data_generator = TestDataGenerator(config)
+    # test_data_generator.generate_and_save_data()
 
     # 初始化模型类 MFPmodel，加载训练数据并训练模型
     model = MFPmodel(config)
