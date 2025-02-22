@@ -17,6 +17,7 @@ from tqdm import tqdm
 ONE_MINUTE = 60  # 一分钟的秒数
 ONE_HOUR = 3600  # 一小时的秒数（60秒 * 60分钟）
 ONE_DAY = 86400  # 一天的秒数（60秒 * 60分钟 * 24小时）
+
 processed_df_files_dir = "/mnt/zhangrengang/data/processed_df"
 windows_json_files_dir = "/mnt/zhangrengang/data/dump/windows"
 pos_windows_json_files_dir = "/mnt/zhangrengang/data/dump/pos_windows"
@@ -25,6 +26,15 @@ test_windows_json_files_dir = "/mnt/zhangrengang/data/dump/test_windows"
 processed_pos_windows_dir = "/mnt/zhangrengang/data/dump/pos_windows_feature"
 processed_neg_windows_dir = "/mnt/zhangrengang/data/dump/neg_windows_feature"
 processed_test_windows_dir = "/mnt/zhangrengang/data/dump/test_windows_feature"
+
+os.makedirs(processed_df_files_dir, exist_ok=True)
+os.makedirs(windows_json_files_dir, exist_ok=True)
+os.makedirs(pos_windows_json_files_dir, exist_ok=True)
+os.makedirs(neg_windows_json_files_dir, exist_ok=True)
+os.makedirs(test_windows_json_files_dir, exist_ok=True)
+os.makedirs(processed_pos_windows_dir, exist_ok=True)
+os.makedirs(processed_neg_windows_dir, exist_ok=True)
+os.makedirs(processed_test_windows_dir, exist_ok=True)
 
 
 @dataclass
@@ -96,9 +106,6 @@ class FeatureFactory(object):
         """
 
         self.config = config
-        os.makedirs(self.config.feature_path, exist_ok=True)
-        os.makedirs(self.config.train_data_path, exist_ok=True)
-        os.makedirs(self.config.test_data_path, exist_ok=True)
 
     def _unique_num_filtered(self, input_array: np.ndarray) -> int:
         """
@@ -463,95 +470,17 @@ class FeatureFactory(object):
         )
         return processed_df
 
-    def process_single_sn(self, sn_file: str) -> NoReturn:
-        """
-        处理单个 sn 文件, 获取不同尺度的时间窗口特征
-
-        :param sn_file: sn 文件名
-        """
-
-        # 获取处理后的 DataFrame
-        new_df = self._get_processed_df(sn_file)
-
-        # 根据生成特征的间隔, 计算时间索引
-        new_df["time_index"] = new_df["LogTime"] // self.config.feature_interval
-        log_times = new_df["LogTime"].values
-
-        # 计算每个时间窗口的结束时间和开始时间, 每次生成特征最多用 max_window_size 的历史数据
-        max_window_size = max(self.config.TIME_RELATED_LIST)
-        window_end_times = new_df.groupby("time_index")["LogTime"].max().values
-        window_start_times = window_end_times - max_window_size
-
-        # 根据时间窗口的起始和结束时间, 找到对应的数据索引
-        start_indices = np.searchsorted(log_times, window_start_times, side="left")
-        end_indices = np.searchsorted(log_times, window_end_times, side="right")
-
-        combined_dict_list = []
-        for start_idx, end_idx, end_time in zip(
-            start_indices, end_indices, window_end_times
-        ):
-            combined_dict = {}
-            window_df = new_df.iloc[start_idx:end_idx]
-            combined_dict["LogTime"] = window_df["LogTime"].values.max()
-
-            # 计算每个 position_and_parity 的出现次数, 并去重
-            window_df = window_df.assign(
-                Count=window_df.groupby("position_and_parity")[
-                    "position_and_parity"
-                ].transform("count")
-            )
-            window_df = window_df.drop_duplicates(
-                subset="position_and_parity", keep="first"
-            )
-            log_times = window_df["LogTime"].values
-            end_logtime_of_filtered_window_df = window_df["LogTime"].values.max()
-
-            # 遍历不同时间窗口大小, 提取时间窗特征(和前面 max_window_size 对应, 时间窗不超过 max_window_size)
-            for time_window_size in self.config.TIME_RELATED_LIST:
-                index = np.searchsorted(
-                    log_times,
-                    end_logtime_of_filtered_window_df - time_window_size,
-                    side="left",
-                )
-                window_df_copy = window_df.iloc[index:]
-
-                # 提取时间特征、空间特征和奇偶校验特征
-                temporal_features = self._get_temporal_features(
-                    window_df_copy, time_window_size
-                )
-                spatio_features = self._get_spatio_features(window_df_copy)
-                err_parity_features = self._get_err_parity_features(window_df_copy)
-
-                # 将特征合并到 combined_dict 中, 并添加时间窗口大小的后缀
-                combined_dict.update(
-                    {
-                        f"{key}_{self.config.TIME_WINDOW_SIZE_MAP[time_window_size]}": value
-                        for d in [
-                            temporal_features,
-                            spatio_features,
-                            err_parity_features,
-                        ]
-                        for key, value in d.items()
-                    }
-                )
-            combined_dict_list.append(combined_dict)
-
-        # 将特征列表转换为 DataFrame 并保存为 feather 文件
-        combined_df = pd.DataFrame(combined_dict_list)
-        feather.write_dataframe(
-            combined_df,
-            os.path.join(self.config.feature_path, sn_file.replace("csv", "feather")),
-        )
-
     def process_all_sn(self) -> NoReturn:
         """
         处理所有 sn 文件, 并保存特征, 支持多进程处理以提高效率
         """
 
         sn_files = os.listdir(self.config.data_path)
-        exist_sn_file_list = os.listdir(self.config.feature_path)
+        exist_sn_file_list = os.listdir(processed_df_files_dir)
+        exist_win_file_list = os.listdir(windows_json_files_dir)
         sn_files = [
-            x for x in sn_files if x not in exist_sn_file_list and x.endswith(self.config.DATA_SUFFIX)
+            x for x in sn_files if ((x not in exist_sn_file_list) or (x.replace('self.config.DATA_SUFFIX', 'json') not in exist_win_file_list))
+            and x.endswith(self.config.DATA_SUFFIX)
         ]
         sn_files.sort()
 
@@ -568,51 +497,6 @@ class FeatureFactory(object):
         else:
             for sn_file in tqdm(sn_files, desc="Generating features"):
                 self.process_single_sn_for_transfomer(sn_file)
-                
-    def process_single_sn_for_transfomer1(self, sn_file: str) -> NoReturn:
-        id = 0
-        zrg_dict = {"features":[],
-                    "label":[],
-                    "length": [],
-                    "id":[],
-                    "name": [],
-                    "Window_LogTime": []
-                    }
-
-        # 获取处理后的 DataFrame
-        new_df = self._get_processed_df(sn_file)
-
-        # 根据生成特征的间隔, 计算时间索引
-        new_df["time_index"] = new_df["LogTime"] // self.config.feature_interval
-        log_times = new_df["LogTime"].values
-
-        # 计算每个时间窗口的结束时间和开始时间, 每次生成特征最多用 max_window_size 的历史数据
-        max_window_size = max(self.config.TIME_RELATED_LIST)
-        window_end_times = new_df.groupby("time_index")["LogTime"].max().values
-        window_start_times = window_end_times - max_window_size
-
-        # 根据时间窗口的起始和结束时间, 找到对应的数据索引
-        start_indices = np.searchsorted(log_times, window_start_times, side="left")
-        end_indices = np.searchsorted(log_times, window_end_times, side="right")
-
-        for start_idx, end_idx, end_time in zip(
-            start_indices, end_indices, window_end_times
-        ):
-            window_name = sn_file.split(".")[0]+"_"+str(start_idx)+"_"+str(end_idx)
-            window_df = new_df.iloc[start_idx:end_idx]
-            window_list = window_df.copy().drop('CellId', axis=1).drop('position_and_parity', axis=1).values.tolist()
-            zrg_dict["features"].append(window_list)
-            zrg_dict["label"].append(0)
-            zrg_dict["length"].append(len(window_list))
-            zrg_dict["id"].append(id)
-            zrg_dict["name"].append(window_name)
-            assert(max(np.array(window_list)[:,0]) == window_list[-1][0])
-            zrg_dict["Window_LogTime"].append(int(max(np.array(window_list)[:,0])))
-            id+=1
-        with open(f"/mnt/zhangrengang/data/dump/feature/{sn_file.split(".")[0]}.json","w") as zrg_file:
-            json_str = json.dumps(zrg_dict,indent=3)
-            zrg_file.write(json_str)
-            zrg_file.close()
             
     def process_single_sn_for_transfomer(self, sn_file: str) -> NoReturn:
         id = 0
@@ -643,8 +527,7 @@ class FeatureFactory(object):
         zrg_dict["end_indices"] = end_indices.tolist()
         zrg_dict["end_times"] = window_end_times.tolist()
         zrg_dict["lens"] = (end_indices - start_indices).tolist()
-        
-        with open(f"/mnt/zhangrengang/data/dump/windows/{sn_file.split(".")[0]}.json","w") as zrg_file:
+        with open(os.path.join(windows_json_files_dir, sn_file.split(".")[0] + '.json'),"w") as zrg_file:
             json_str = json.dumps(zrg_dict,indent=4)
             zrg_file.write(json_str)
             zrg_file.close()
@@ -665,9 +548,6 @@ class DataGenerator(metaclass=abc.ABCMeta):
         """
 
         self.config = config
-        self.feature_path = self.config.feature_path
-        self.train_data_path = self.config.train_data_path
-        self.test_data_path = self.config.test_data_path
         self.ticket_path = self.config.ticket_path
 
         # 将日期范围转换为时间戳
@@ -689,9 +569,6 @@ class DataGenerator(metaclass=abc.ABCMeta):
             sn: sn_t
             for sn, sn_t in zip(list(ticket["sn_name"]), list(ticket["alarm_time"]))
         }
-
-        os.makedirs(self.config.train_data_path, exist_ok=True)
-        os.makedirs(self.config.test_data_path, exist_ok=True)
 
     @staticmethod
     def concat_in_chunks(chunks: List) -> Union[pd.DataFrame, None]:
@@ -747,8 +624,8 @@ class DataGenerator(metaclass=abc.ABCMeta):
         :return: 处理后的数据
         """
 
-        file_list = os.listdir(self.feature_path)
-        file_list = [x for x in file_list if x.endswith(".json")]
+        file_list = os.listdir(processed_df_files_dir)
+        file_list = [x for x in file_list if x.endswith(".feather")]
         file_list.sort()
 
         if self.config.USE_MULTI_PROCESS:
@@ -809,76 +686,6 @@ class DataGenerator(metaclass=abc.ABCMeta):
             return windows_dict        
         
 class PositiveDataGenerator(DataGenerator):
-    def _process_file2(self, sn_file: str) -> Union[pd.DataFrame, None]:
-        """
-        处理单个文件, 获取正样本数据
-
-        :param sn_file: 文件名
-        :return: 处理后的 DataFrame
-        """
-        sn_name = os.path.splitext(sn_file)[0]
-        if self.ticket_sn_map.get(sn_name):
-            # 设正样本的时间范围为维修单时间的前 30 天
-            end_time = self.ticket_sn_map.get(sn_name)
-            start_time = end_time - 30 * ONE_DAY
-
-            data = feather.read_dataframe(os.path.join(self.feature_path, sn_file))
-            data = data[(data["LogTime"] <= end_time) & (data["LogTime"] >= start_time)]
-            data["label"] = 1
-
-            index_list = [(sn_name, log_time) for log_time in data["LogTime"]]
-            # NOTE
-            if len(index_list) == 0:
-                return None
-            data.index = pd.MultiIndex.from_tuples(index_list)
-            return data
-
-        # 如果 SN 名称不在维修单中, 则返回 None
-        return None
-    
-    def _process_file_feature(self, sn_file: str):
-        """
-        处理单个文件, 获取正样本数据
-
-        :param sn_file: 文件名
-        :return: 处理后的 DataFrame
-        """
-        cur_sn_dict = dict()
-        with open(f"/mnt/zhangrengang/data/dump/feature/{sn_file.split(".")[0]+".json"}","r") as file:
-            cur_sn_dict = json.load(file)
-            file.close()
-            
-        cur_positive_sn_dict = {"features":[],
-                    "label":[],
-                    "length": [],
-                    "id":[],
-                    "name": [],
-                    "Window_LogTime": []
-                    }
-        sn_name = os.path.splitext(sn_file)[0]
-        if self.ticket_sn_map.get(sn_name):
-            # 设正样本的时间范围为维修单时间的前 30 天
-            end_time = self.ticket_sn_map.get(sn_name)
-            start_time = end_time - 30 * ONE_DAY
-
-            for i in range(len(cur_sn_dict["Window_LogTime"])):
-                if (cur_sn_dict["Window_LogTime"][i]<= end_time) & (cur_sn_dict["Window_LogTime"][i] >= start_time):
-                    cur_positive_sn_dict["features"].append(cur_sn_dict["features"][i])
-                    cur_positive_sn_dict["label"].append(1)
-                    cur_positive_sn_dict["length"].append(cur_sn_dict["length"][i])
-                    cur_positive_sn_dict["id"].append(cur_sn_dict["id"][i])
-                    cur_positive_sn_dict["name"].append(cur_sn_dict["name"][i])
-                    cur_positive_sn_dict["Window_LogTime"].append(cur_sn_dict["Window_LogTime"][i])
-                    
-            with open(f"/mnt/zhangrengang/data/dump/positive_feature_with_label/{sn_file.split(".")[0]}.json","w") as zrg_file:
-                json_str = json.dumps(cur_positive_sn_dict,indent=3)
-                zrg_file.write(json_str)
-                zrg_file.close()
-                
-            return 
-
-        return None
-    
     def _process_file(self, sn_file: str):
         """
         处理单个文件, 获取正样本数据
@@ -921,86 +728,9 @@ class PositiveDataGenerator(DataGenerator):
         """
         生成并保存正样本数据
         """
+        self._get_data()
 
-        data_all = self._get_data()
-        # feather.write_dataframe(
-        #     data_all, os.path.join(self.train_data_path, "positive_train.feather")
-        # )
-
-class NegativeDataGenerator(DataGenerator):
-    def _process_file2(self, sn_file: str) -> Union[pd.DataFrame, None]:
-        """
-        处理单个文件, 获取负样本数据
-
-        :param sn_file: 文件名
-        :return: 处理后的 DataFrame
-        """
-
-        sn_name = os.path.splitext(sn_file)[0]
-        if not self.ticket_sn_map.get(sn_name):
-            data = feather.read_dataframe(os.path.join(self.feature_path, sn_file))
-
-            # 设负样本的时间范围为某段连续的 30 天
-            end_time = self.train_end_date - 30 * ONE_DAY
-            start_time = self.train_end_date - 60 * ONE_DAY
-
-            data = data[(data["LogTime"] <= end_time) & (data["LogTime"] >= start_time)]
-            if data.empty:
-                return None
-            data["label"] = 0
-
-            index_list = [(sn_name, log_time) for log_time in data["LogTime"]]
-            data.index = pd.MultiIndex.from_tuples(index_list)
-            return data
-
-        # 如果 SN 名称在维修单中, 则返回 None
-        return None
-
-    def _process_file_feature(self, sn_file: str) :
-        """
-        处理单个文件, 获取负样本数据
-
-        :param sn_file: 文件名
-        :return: 处理后的 DataFrame
-        """
-        cur_sn_dict = dict()
-        with open(f"/mnt/zhangrengang/data/dump/feature/{sn_file.split(".")[0]+".json"}","r") as file:
-            cur_sn_dict = json.load(file)
-            file.close()
-            
-        cur_negtive_sn_dict = {"features":[],
-                    "label":[],
-                    "length": [],
-                    "id":[],
-                    "name": [],
-                    "Window_LogTime": []
-                    }
-        
-        sn_name = os.path.splitext(sn_file)[0]
-        if not self.ticket_sn_map.get(sn_name):
-
-            # 设负样本的时间范围为某段连续的 30 天
-            end_time = self.train_end_date - 30 * ONE_DAY
-            start_time = self.train_end_date - 60 * ONE_DAY
-
-            for i in range(len(cur_sn_dict["Window_LogTime"])):
-                if (cur_sn_dict["Window_LogTime"][i]  <= end_time) & (cur_sn_dict["Window_LogTime"][i] >= start_time) :
-                    cur_negtive_sn_dict["features"].append(cur_sn_dict["features"][i])
-                    cur_negtive_sn_dict["label"].append(0)
-                    cur_negtive_sn_dict["length"].append(cur_sn_dict["length"][i])
-                    cur_negtive_sn_dict["id"].append(cur_sn_dict["id"][i])
-                    cur_negtive_sn_dict["name"].append(cur_sn_dict["name"][i])
-                    cur_negtive_sn_dict["Window_LogTime"].append(cur_sn_dict["Window_LogTime"][i])
-                    
-            with open(f"/mnt/zhangrengang/data/dump/negtive_feature_with_label/{sn_file.split(".")[0]}.json","w") as zrg_file:
-                json_str = json.dumps(cur_negtive_sn_dict,indent=3)
-                zrg_file.write(json_str)
-                zrg_file.close()
-                 
-
-        # 如果 SN 名称在维修单中, 则返回 None
-        return None
-    
+class NegativeDataGenerator(DataGenerator):   
     def _process_file(self, sn_file: str) :
         """
         处理单个文件, 获取负样本数据
@@ -1046,11 +776,7 @@ class NegativeDataGenerator(DataGenerator):
         """
         生成并保存负样本数据
         """
-
-        data_all = self._get_data()
-        # feather.write_dataframe(
-        #     data_all, os.path.join(self.train_data_path, "negative_train.feather")
-        # )
+        self._get_data()
 
 class TestDataGenerator(DataGenerator):
     @staticmethod
@@ -1065,27 +791,6 @@ class TestDataGenerator(DataGenerator):
 
         for start in range(0, len(df), chunk_size):
             yield df[start : start + chunk_size]
-
-    def _process_file2(self, sn_file: str) -> Union[pd.DataFrame, None]:
-        """
-        处理单个文件, 获取测试数据
-
-        :param sn_file: 文件名
-        :return: 处理后的 DataFrame
-        """
-
-        sn_name = os.path.splitext(sn_file)[0]
-
-        # 读取特征文件, 并过滤出测试时间范围内的数据
-        data = feather.read_dataframe(os.path.join(self.feature_path, sn_file))
-        data = data[data["LogTime"] >= self.test_start_date]
-        data = data[data["LogTime"] <= self.test_end_date]
-        if data.empty:
-            return None
-
-        index_list = [(sn_name, log_time) for log_time in data["LogTime"]]
-        data.index = pd.MultiIndex.from_tuples(index_list)
-        return data
     
     def _process_file(self, sn_file: str) -> Union[pd.DataFrame, None]:
         """
@@ -1124,11 +829,7 @@ class TestDataGenerator(DataGenerator):
         生成并保存测试数据
         """
 
-        data_all = self._get_data()
-        # for index, chunk in enumerate(self._split_dataframe(data_all)):
-        #     feather.write_dataframe(
-        #         chunk, os.path.join(self.test_data_path, f"res_{index}.feather")
-        #     )
+        self._get_data()
 
 class MFPmodel(object):
     """
@@ -1230,7 +931,7 @@ class MFPmodel(object):
 
         return result
 
-def process_windows(windows_dir: str, processed_df_dir: str, output_dir:str, chunk_size:int = 256):
+def process_windows(windows_dir: str, processed_df_dir: str, output_dir:str, chunk_size:int = 128):
     os.makedirs(output_dir, exist_ok=True)
     buffer_dict = {"features":[],
                     "label":[],
@@ -1256,9 +957,9 @@ def process_windows(windows_dir: str, processed_df_dir: str, output_dir:str, chu
             )
             # 去重
             # TODO: 是否去重待定
-            # window_df = window_df.drop_duplicates(
-            #     subset="position_and_parity", keep="first"
-            # )
+            win_df = win_df.drop_duplicates(
+                subset="position_and_parity", keep="first"
+            )
             lens = win_df.shape[0]
             win_df = win_df.assign(Lens = lens)
             win_df = win_df.drop('CellId', axis=1).drop('position_and_parity', axis=1)
