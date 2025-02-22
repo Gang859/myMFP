@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from multiprocessing import Pool
 from typing import Dict, Tuple, NoReturn, Union, List
-
+import json
 import argparse
 import feather
 import numpy as np
@@ -17,6 +17,14 @@ from tqdm import tqdm
 ONE_MINUTE = 60  # 一分钟的秒数
 ONE_HOUR = 3600  # 一小时的秒数（60秒 * 60分钟）
 ONE_DAY = 86400  # 一天的秒数（60秒 * 60分钟 * 24小时）
+processed_df_files_dir = "/mnt/zhangrengang/data/processed_df"
+windows_json_files_dir = "/mnt/zhangrengang/data/dump/windows"
+pos_windows_json_files_dir = "/mnt/zhangrengang/data/dump/pos_windows"
+neg_windows_json_files_dir = "/mnt/zhangrengang/data/dump/neg_windows"
+test_windows_json_files_dir = "/mnt/zhangrengang/data/dump/test_windows"
+processed_pos_windows_dir = "/mnt/zhangrengang/data/dump/pos_windows_feature"
+processed_neg_windows_dir = "/mnt/zhangrengang/data/dump/neg_windows_feature"
+processed_test_windows_dir = "/mnt/zhangrengang/data/dump/test_windows_feature"
 
 
 @dataclass
@@ -66,7 +74,7 @@ class Config(object):
     test_data_range: tuple = ("2024-05-01", "2024-06-01")
 
     # 特征提取的时间间隔(秒), 为了更高的性能, 可以修改为 15 * ONE_MINUTE 或 30 * ONE_MINUTE
-    feature_interval: int = 15 * ONE_MINUTE
+    feature_interval: int = 30 * ONE_MINUTE
 
     # dump json path
     s1_window_data_json : str = "To be filled"
@@ -360,6 +368,10 @@ class FeatureFactory(object):
         :param sn_file: SN 文件名
         :return: 处理后的 DataFrame
         """
+        
+        if os.path.exists(os.path.join(processed_df_files_dir, sn_file.split('.')[0] + '.feather')):
+            processed_df = feather.read_dataframe(os.path.join(processed_df_files_dir, sn_file.split('.')[0] + '.feather'))
+            return processed_df
 
         parity_dict = dict()
 
@@ -442,6 +454,12 @@ class FeatureFactory(object):
                     "max_burst_interval",
                 ],
             )
+        )
+        
+        # write processd_df
+        feather.write_dataframe(
+            processed_df,
+            os.path.join(os.path.join(processed_df_files_dir, sn_file.split('.')[0] + '.feather')),
         )
         return processed_df
 
@@ -551,12 +569,10 @@ class FeatureFactory(object):
             for sn_file in tqdm(sn_files, desc="Generating features"):
                 self.process_single_sn_for_transfomer(sn_file)
                 
-
-
-    def process_single_sn_for_transfomer(self, sn_file: str) -> NoReturn:
+    def process_single_sn_for_transfomer1(self, sn_file: str) -> NoReturn:
         id = 0
         zrg_dict = {"features":[],
-                    "lable":[],
+                    "label":[],
                     "length": [],
                     "id":[],
                     "name": [],
@@ -586,16 +602,50 @@ class FeatureFactory(object):
             window_df = new_df.iloc[start_idx:end_idx]
             window_list = window_df.copy().drop('CellId', axis=1).drop('position_and_parity', axis=1).values.tolist()
             zrg_dict["features"].append(window_list)
-            zrg_dict["lable"].append(0)
+            zrg_dict["label"].append(0)
             zrg_dict["length"].append(len(window_list))
             zrg_dict["id"].append(id)
             zrg_dict["name"].append(window_name)
             assert(max(np.array(window_list)[:,0]) == window_list[-1][0])
             zrg_dict["Window_LogTime"].append(int(max(np.array(window_list)[:,0])))
             id+=1
-        import json
-        with open(f"/mnt/zhangrengang/workspace/myMFP/dump/feature/{sn_file.split(".")[0]}.json","w") as zrg_file:
-            json_str = json.dumps(zrg_dict,indent=1)
+        with open(f"/mnt/zhangrengang/data/dump/feature/{sn_file.split(".")[0]}.json","w") as zrg_file:
+            json_str = json.dumps(zrg_dict,indent=3)
+            zrg_file.write(json_str)
+            zrg_file.close()
+            
+    def process_single_sn_for_transfomer(self, sn_file: str) -> NoReturn:
+        id = 0
+        zrg_dict = {"start_indices":[],
+                    "end_indices":[],
+                    "end_times": [],
+                    "labels": [],
+                    "lens":[]
+                    }
+
+        # 获取处理后的 DataFrame
+        new_df = self._get_processed_df(sn_file)
+
+        # 根据生成特征的间隔, 计算时间索引
+        new_df["time_index"] = new_df["LogTime"] // self.config.feature_interval
+        log_times = new_df["LogTime"].values
+
+        # 计算每个时间窗口的结束时间和开始时间, 每次生成特征最多用 max_window_size 的历史数据
+        max_window_size = max(self.config.TIME_RELATED_LIST)
+        window_end_times = new_df.groupby("time_index")["LogTime"].max().values
+        window_start_times = window_end_times - max_window_size
+
+        # 根据时间窗口的起始和结束时间, 找到对应的数据索引
+        start_indices = np.searchsorted(log_times, window_start_times, side="left")
+        end_indices = np.searchsorted(log_times, window_end_times, side="right")
+        
+        zrg_dict["start_indices"] = start_indices.tolist()
+        zrg_dict["end_indices"] = end_indices.tolist()
+        zrg_dict["end_times"] = window_end_times.tolist()
+        zrg_dict["lens"] = (end_indices - start_indices).tolist()
+        
+        with open(f"/mnt/zhangrengang/data/dump/windows/{sn_file.split(".")[0]}.json","w") as zrg_file:
+            json_str = json.dumps(zrg_dict,indent=4)
             zrg_file.write(json_str)
             zrg_file.close()
 
@@ -746,6 +796,18 @@ class DataGenerator(metaclass=abc.ABCMeta):
 
         raise NotImplementedError("Subclasses should implement this method")
 
+    def _get_processed_df(self, sn_file: str) -> pd.DataFrame:
+        assert (os.path.exists(os.path.join(processed_df_files_dir, sn_file.split('.')[0] + '.feather')))
+        processed_df = feather.read_dataframe(os.path.join(processed_df_files_dir, sn_file.split('.')[0] + '.feather'))
+        return processed_df
+    
+    def _get_windows(self, sn_file: str) -> Dict:
+        assert (os.path.exists(os.path.join(windows_json_files_dir, sn_file.split('.')[0] + '.json')))
+        with open(os.path.join(windows_json_files_dir, sn_file.split('.')[0] + '.json'),"r") as win_file:
+            windows_dict = json.load(win_file)
+            win_file.close()
+            return windows_dict        
+        
 class PositiveDataGenerator(DataGenerator):
     def _process_file2(self, sn_file: str) -> Union[pd.DataFrame, None]:
         """
@@ -774,7 +836,7 @@ class PositiveDataGenerator(DataGenerator):
         # 如果 SN 名称不在维修单中, 则返回 None
         return None
     
-    def _process_file(self, sn_file: str):
+    def _process_file_feature(self, sn_file: str):
         """
         处理单个文件, 获取正样本数据
 
@@ -782,13 +844,12 @@ class PositiveDataGenerator(DataGenerator):
         :return: 处理后的 DataFrame
         """
         cur_sn_dict = dict()
-        with open(f"/mnt/zhangrengang/workspace/myMFP/dump/feature/{sn_file.split(".")[0]+".json"}","r") as file:
-            import json
+        with open(f"/mnt/zhangrengang/data/dump/feature/{sn_file.split(".")[0]+".json"}","r") as file:
             cur_sn_dict = json.load(file)
             file.close()
             
         cur_positive_sn_dict = {"features":[],
-                    "lable":[],
+                    "label":[],
                     "length": [],
                     "id":[],
                     "name": [],
@@ -803,19 +864,56 @@ class PositiveDataGenerator(DataGenerator):
             for i in range(len(cur_sn_dict["Window_LogTime"])):
                 if (cur_sn_dict["Window_LogTime"][i]<= end_time) & (cur_sn_dict["Window_LogTime"][i] >= start_time):
                     cur_positive_sn_dict["features"].append(cur_sn_dict["features"][i])
-                    cur_positive_sn_dict["lable"].append(1)
+                    cur_positive_sn_dict["label"].append(1)
                     cur_positive_sn_dict["length"].append(cur_sn_dict["length"][i])
                     cur_positive_sn_dict["id"].append(cur_sn_dict["id"][i])
                     cur_positive_sn_dict["name"].append(cur_sn_dict["name"][i])
                     cur_positive_sn_dict["Window_LogTime"].append(cur_sn_dict["Window_LogTime"][i])
                     
-            import json
-            with open(f"/mnt/zhangrengang/workspace/myMFP/dump/positive_feature_with_label/{sn_file.split(".")[0]}.json","w") as zrg_file:
-                json_str = json.dumps(cur_positive_sn_dict,indent=1)
+            with open(f"/mnt/zhangrengang/data/dump/positive_feature_with_label/{sn_file.split(".")[0]}.json","w") as zrg_file:
+                json_str = json.dumps(cur_positive_sn_dict,indent=3)
                 zrg_file.write(json_str)
                 zrg_file.close()
                 
             return 
+
+        return None
+    
+    def _process_file(self, sn_file: str):
+        """
+        处理单个文件, 获取正样本数据
+
+        :param sn_file: 文件名
+        :return: 处理后的 DataFrame
+        """
+        windows_dict = self._get_windows(sn_file)
+        pos_windows_dict = {"start_indices":[],
+                    "end_indices":[],
+                    "end_times": [],
+                    "labels": [],
+                    "lens":[]
+                    }
+        
+        sn_name = os.path.splitext(sn_file)[0]
+        if self.ticket_sn_map.get(sn_name):
+            # 设正样本的时间范围为维修单时间的前 30 天
+            end_time = self.ticket_sn_map.get(sn_name)
+            start_time = end_time - 30 * ONE_DAY
+
+            for i in range(len(windows_dict["end_times"])):
+                if (windows_dict["end_times"][i] <= end_time) & (windows_dict["end_times"][i] >= start_time):
+                    pos_windows_dict["start_indices"].append(windows_dict["start_indices"][i])
+                    pos_windows_dict["end_indices"].append(windows_dict["end_indices"][i])
+                    pos_windows_dict["end_times"].append(windows_dict["end_times"][i])
+                    pos_windows_dict["lens"].append(windows_dict["lens"][i])
+                    pos_windows_dict["labels"].append(1)
+            
+            if len(pos_windows_dict["start_indices"]) > 0:       
+                with open(os.path.join(pos_windows_json_files_dir, sn_file.split(".")[0] + '.json'), "w") as zrg_file:
+                    json_str = json.dumps(pos_windows_dict,indent=3)
+                    zrg_file.write(json_str)
+                    zrg_file.close()
+                return 
 
         return None
 
@@ -858,7 +956,7 @@ class NegativeDataGenerator(DataGenerator):
         # 如果 SN 名称在维修单中, 则返回 None
         return None
 
-    def _process_file(self, sn_file: str) :
+    def _process_file_feature(self, sn_file: str) :
         """
         处理单个文件, 获取负样本数据
 
@@ -866,13 +964,12 @@ class NegativeDataGenerator(DataGenerator):
         :return: 处理后的 DataFrame
         """
         cur_sn_dict = dict()
-        with open(f"/mnt/zhangrengang/workspace/myMFP/dump/feature/{sn_file.split(".")[0]+".json"}","r") as file:
-            import json
+        with open(f"/mnt/zhangrengang/data/dump/feature/{sn_file.split(".")[0]+".json"}","r") as file:
             cur_sn_dict = json.load(file)
             file.close()
             
         cur_negtive_sn_dict = {"features":[],
-                    "lable":[],
+                    "label":[],
                     "length": [],
                     "id":[],
                     "name": [],
@@ -889,22 +986,62 @@ class NegativeDataGenerator(DataGenerator):
             for i in range(len(cur_sn_dict["Window_LogTime"])):
                 if (cur_sn_dict["Window_LogTime"][i]  <= end_time) & (cur_sn_dict["Window_LogTime"][i] >= start_time) :
                     cur_negtive_sn_dict["features"].append(cur_sn_dict["features"][i])
-                    cur_negtive_sn_dict["lable"].append(0)
+                    cur_negtive_sn_dict["label"].append(0)
                     cur_negtive_sn_dict["length"].append(cur_sn_dict["length"][i])
                     cur_negtive_sn_dict["id"].append(cur_sn_dict["id"][i])
                     cur_negtive_sn_dict["name"].append(cur_sn_dict["name"][i])
                     cur_negtive_sn_dict["Window_LogTime"].append(cur_sn_dict["Window_LogTime"][i])
                     
-            import json
-            with open(f"/mnt/zhangrengang/workspace/myMFP/dump/negtive_feature_with_label/{sn_file.split(".")[0]}.json","w") as zrg_file:
-                json_str = json.dumps(cur_negtive_sn_dict,indent=1)
+            with open(f"/mnt/zhangrengang/data/dump/negtive_feature_with_label/{sn_file.split(".")[0]}.json","w") as zrg_file:
+                json_str = json.dumps(cur_negtive_sn_dict,indent=3)
                 zrg_file.write(json_str)
                 zrg_file.close()
                  
 
         # 如果 SN 名称在维修单中, 则返回 None
         return None
+    
+    def _process_file(self, sn_file: str) :
+        """
+        处理单个文件, 获取负样本数据
 
+        :param sn_file: 文件名
+        :return: 处理后的 DataFrame
+        """
+        
+        windows_dict = self._get_windows(sn_file)
+        neg_windows_dict = {"start_indices":[],
+                    "end_indices":[],
+                    "end_times": [],
+                    "labels": [],
+                    "lens":[]
+                    }
+
+        sn_name = os.path.splitext(sn_file)[0]
+        if not self.ticket_sn_map.get(sn_name):
+
+            # 设负样本的时间范围为某段连续的 30 天
+            end_time = self.train_end_date - 30 * ONE_DAY
+            start_time = self.train_end_date - 60 * ONE_DAY
+
+            for i in range(len(windows_dict["end_times"])):
+                if (windows_dict["end_times"][i]  <= end_time) & (windows_dict["end_times"][i] >= start_time) :
+                    neg_windows_dict["start_indices"].append(windows_dict["start_indices"][i])
+                    neg_windows_dict["end_indices"].append(windows_dict["end_indices"][i])
+                    neg_windows_dict["end_times"].append(windows_dict["end_times"][i])
+                    neg_windows_dict["lens"].append(windows_dict["lens"][i])
+                    neg_windows_dict["labels"].append(0)
+            
+            if len(neg_windows_dict["start_indices"]) > 0:
+                with open(os.path.join(neg_windows_json_files_dir, sn_file.split(".")[0] + '.json'), "w") as zrg_file:
+                    json_str = json.dumps(neg_windows_dict,indent=3)
+                    zrg_file.write(json_str)
+                    zrg_file.close()
+            return
+
+        # 如果 SN 名称在维修单中, 则返回 None
+        return None
+    
     def generate_and_save_data(self) -> NoReturn:
         """
         生成并保存负样本数据
@@ -929,7 +1066,7 @@ class TestDataGenerator(DataGenerator):
         for start in range(0, len(df), chunk_size):
             yield df[start : start + chunk_size]
 
-    def _process_file(self, sn_file: str) -> Union[pd.DataFrame, None]:
+    def _process_file2(self, sn_file: str) -> Union[pd.DataFrame, None]:
         """
         处理单个文件, 获取测试数据
 
@@ -949,6 +1086,38 @@ class TestDataGenerator(DataGenerator):
         index_list = [(sn_name, log_time) for log_time in data["LogTime"]]
         data.index = pd.MultiIndex.from_tuples(index_list)
         return data
+    
+    def _process_file(self, sn_file: str) -> Union[pd.DataFrame, None]:
+        """
+        处理单个文件, 获取测试数据
+
+        :param sn_file: 文件名
+        :return: 处理后的 DataFrame
+        """        
+        windows_dict = self._get_windows(sn_file)
+        test_windows_dict = {"start_indices":[],
+                    "end_indices":[],
+                    "end_times": [],
+                    "labels": [],
+                    "lens":[]
+                    }
+        
+        for i in range(len(windows_dict["end_times"])):
+            if (windows_dict["end_times"][i]  <= self.test_end_date) & (windows_dict["end_times"][i] >= self.test_start_date) :
+                test_windows_dict["start_indices"].append(windows_dict["start_indices"][i])
+                test_windows_dict["end_indices"].append(windows_dict["end_indices"][i])
+                test_windows_dict["end_times"].append(windows_dict["end_times"][i])
+                test_windows_dict["lens"].append(windows_dict["lens"][i])
+                test_windows_dict["labels"].append(0)
+        
+        if len(test_windows_dict["start_indices"]) > 0:
+            with open(os.path.join(test_windows_json_files_dir, sn_file.split(".")[0] + '.json'), "w") as zrg_file:
+                json_str = json.dumps(test_windows_dict,indent=3)
+                zrg_file.write(json_str)
+                zrg_file.close()
+            return 
+        
+        return None
 
     def generate_and_save_data(self) -> NoReturn:
         """
@@ -956,10 +1125,10 @@ class TestDataGenerator(DataGenerator):
         """
 
         data_all = self._get_data()
-        for index, chunk in enumerate(self._split_dataframe(data_all)):
-            feather.write_dataframe(
-                chunk, os.path.join(self.test_data_path, f"res_{index}.feather")
-            )
+        # for index, chunk in enumerate(self._split_dataframe(data_all)):
+        #     feather.write_dataframe(
+        #         chunk, os.path.join(self.test_data_path, f"res_{index}.feather")
+        #     )
 
 class MFPmodel(object):
     """
@@ -1061,6 +1230,61 @@ class MFPmodel(object):
 
         return result
 
+def process_windows(windows_dir: str, processed_df_dir: str, output_dir:str, chunk_size:int = 256):
+    os.makedirs(output_dir, exist_ok=True)
+    buffer_dict = {"features":[],
+                    "label":[],
+                    "Window_LogTime": []
+                    }
+    chunk_number = 1
+    file_list = sorted(os.listdir(windows_dir))
+    for filename in tqdm(file_list, desc=f"processing {windows_dir.split('/')[-1].split('_')[0]} windows"):
+        sn_name = filename.split('.')[0]
+        # open json file
+        with open(os.path.join(windows_dir, filename)) as win_file:
+            windows_dict = json.load(win_file)
+            win_file.close()
+        processed_df = feather.read_dataframe(os.path.join(processed_df_dir, sn_name + '.feather'))
+        for i in range(len(windows_dict["start_indices"])):
+            win_df = processed_df.iloc[windows_dict["start_indices"][i]:windows_dict["end_indices"][i]]
+            # 统计window长度
+            
+            win_df = win_df.assign(
+                Count=win_df.groupby("position_and_parity")[
+                    "position_and_parity"
+                ].transform("count")
+            )
+            # 去重
+            # TODO: 是否去重待定
+            # window_df = window_df.drop_duplicates(
+            #     subset="position_and_parity", keep="first"
+            # )
+            lens = win_df.shape[0]
+            win_df = win_df.assign(Lens = lens)
+            win_df = win_df.drop('CellId', axis=1).drop('position_and_parity', axis=1)
+            window_list = win_df.values.tolist()
+            buffer_dict["features"].append(window_list)
+            buffer_dict["label"].append(windows_dict["labels"][i])
+            buffer_dict["Window_LogTime"].append(windows_dict["end_indices"][i])
+            if len(buffer_dict["features"]) == chunk_size:
+                output_file = os.path.join(output_dir, f'chunk_{chunk_number}.json')
+                with open(output_file, "w") as out_f:
+                    json_str = json.dumps(buffer_dict, indent=3)
+                    out_f.write(json_str)
+                    out_f.close()
+                buffer_dict = {
+                    "features":[],
+                    "label":[],
+                    "Window_LogTime": []
+                }
+                chunk_number += 1
+    # 写入剩余数据
+    if len(buffer_dict["features"]) > 0:
+        output_file = os.path.join(output_dir, f'chunk_{chunk_number}.json')
+        with open(output_file, "w") as out_f:
+            json_str = json.dumps(buffer_dict, indent=3)
+            out_f.write(json_str)
+            out_f.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -1122,9 +1346,14 @@ if __name__ == "__main__":
     negative_data_generator.generate_and_save_data()
 
     # 初始化测试数据生成器，生成并保存测试数据
-    # test_data_generator = TestDataGenerator(config)
-    # test_data_generator.generate_and_save_data()
+    test_data_generator = TestDataGenerator(config)
+    test_data_generator.generate_and_save_data()
+    
+    process_windows(pos_windows_json_files_dir, processed_df_files_dir, processed_pos_windows_dir)
+    process_windows(neg_windows_json_files_dir, processed_df_files_dir, processed_neg_windows_dir)
+    process_windows(test_windows_json_files_dir, processed_df_files_dir, processed_test_windows_dir)
 
+    exit(0)
     # 初始化模型类 MFPmodel，加载训练数据并训练模型
     model = MFPmodel(config)
     model.load_train_data()  # 加载训练数据
