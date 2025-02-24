@@ -4,8 +4,9 @@ import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+MAX_SEQ_LEN = 128
 
-def pad_sequences(sequences, maxlen=128, padding='front', value=0):
+def pad_sequences(sequences, maxlen=MAX_SEQ_LEN, padding='front', value=0):
     
     mask = np.full((len(sequences), maxlen), 0)
     padded_sequences = np.full((len(sequences), maxlen, 16), value)

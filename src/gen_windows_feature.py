@@ -12,20 +12,23 @@ import numpy as np
 import pandas as pd
 from lightgbm import LGBMClassifier
 from tqdm import tqdm
+import queue
+import threading
 
 # 定义时间常量（单位：秒）
 ONE_MINUTE = 60  # 一分钟的秒数
 ONE_HOUR = 3600  # 一小时的秒数（60秒 * 60分钟）
 ONE_DAY = 86400  # 一天的秒数（60秒 * 60分钟 * 24小时）
 
-processed_df_files_dir = "/mnt/zhangrengang/data/processed_df"
-windows_json_files_dir = "/mnt/zhangrengang/data/dump/windows"
-pos_windows_json_files_dir = "/mnt/zhangrengang/data/dump/pos_windows"
-neg_windows_json_files_dir = "/mnt/zhangrengang/data/dump/neg_windows"
-test_windows_json_files_dir = "/mnt/zhangrengang/data/dump/test_windows"
-processed_pos_windows_dir = "/mnt/zhangrengang/data/dump/pos_windows_feature"
-processed_neg_windows_dir = "/mnt/zhangrengang/data/dump/neg_windows_feature"
-processed_test_windows_dir = "/mnt/zhangrengang/data/dump/test_windows_feature"
+processed_df_files_dir = "/backup/home/zhangrengang/workspace/Doc/processed_df"
+output_feature_dir = "/backup/home/zhangrengang/workspace/Doc/win30m_feature_with_ecc/"
+windows_json_files_dir = output_feature_dir + "windows"
+pos_windows_json_files_dir = output_feature_dir + "pos_windows"
+neg_windows_json_files_dir = output_feature_dir + "neg_windows"
+test_windows_json_files_dir = output_feature_dir + "test_windows"
+processed_pos_windows_dir = output_feature_dir + "pos_windows_feature"
+processed_neg_windows_dir = output_feature_dir + "neg_windows_feature"
+processed_test_windows_dir = output_feature_dir + "test_windows_feature"
 
 os.makedirs(processed_df_files_dir, exist_ok=True)
 os.makedirs(windows_json_files_dir, exist_ok=True)
@@ -70,7 +73,7 @@ class Config(object):
     USE_MULTI_PROCESS: bool = field(default=True, init=False)
 
     # 如果使用多进程, 并行时 worker 的数量
-    WORKER_NUM: int = field(default=72, init=False)
+    WORKER_NUM: int = field(default=32, init=False)
 
     # 数据路径配置, 分别是原始数据集路径、生成的特征路径、处理后训练集特征路径、处理后测试集特征路径、维修单路径
     data_path: str = "To be filled"
@@ -80,8 +83,8 @@ class Config(object):
     ticket_path: str = "To be filled"
 
     # 日期范围配置
-    train_date_range: tuple = ("2024-01-01", "2024-05-01")
-    test_data_range: tuple = ("2024-05-01", "2024-06-01")
+    train_date_range: tuple = ("2024-01-01", "2024-06-01")
+    test_data_range: tuple = ("2024-06-01", "2024-08-01")
 
     # 特征提取的时间间隔(秒), 为了更高的性能, 可以修改为 15 * ONE_MINUTE 或 30 * ONE_MINUTE
     feature_interval: int = 30 * ONE_MINUTE
@@ -316,7 +319,7 @@ class FeatureFactory(object):
         return err_parity_features
 
     @staticmethod
-    def _get_bit_dq_burst_info(parity: np.int64) -> Tuple[int, int, int, int, int]:
+    def _get_bit_dq_burst_info(bin_parity) -> Tuple[int, int, int, int, int]:
         """
         获取特定 parity 的奇偶校验信息
 
@@ -331,7 +334,7 @@ class FeatureFactory(object):
         """
 
         # 将 Parity 转换为 32 位二进制字符串
-        bin_parity = bin(parity)[2:].zfill(32)
+        # bin_parity = bin(parity)[2:].zfill(32)
 
         # 计算错误 bit 数量
         bit_count = bin_parity.count("1")
@@ -443,10 +446,14 @@ class FeatureFactory(object):
 
         # 计算每个 parity 的 bit_count、dq_count、burst_count、max_dq_interval 和 max_burst_interval
         bit_dq_burst_count = list()
+        # 32位checkingbits
+        checkingbits = list()
         for idx, err_log_parity in enumerate(err_log_parity_array):
+            bin_parity = bin(err_log_parity)[2:].zfill(32)
+            checkingbits.append([bool(True) if x == '1' else bool(False) for x in list(bin_parity)])
             if err_log_parity not in parity_dict:
                 parity_dict[err_log_parity] = self._get_bit_dq_burst_info(
-                    err_log_parity
+                    bin_parity
                 )
             bit_dq_burst_count.append(parity_dict[err_log_parity])
 
@@ -459,6 +466,45 @@ class FeatureFactory(object):
                     "burst_count",
                     "max_dq_interval",
                     "max_burst_interval",
+                ],
+            )
+        )
+        processed_df = processed_df.join(
+            pd.DataFrame(
+                checkingbits,
+                columns=[
+                    "ecc_bit_0",
+                    "ecc_bit_1",
+                    "ecc_bit_2",
+                    "ecc_bit_3",
+                    "ecc_bit_4",
+                    "ecc_bit_5",
+                    "ecc_bit_6",
+                    "ecc_bit_7",
+                    "ecc_bit_8",
+                    "ecc_bit_9",
+                    "ecc_bit_10",
+                    "ecc_bit_11",
+                    "ecc_bit_12",
+                    "ecc_bit_13",
+                    "ecc_bit_14",
+                    "ecc_bit_15",
+                    "ecc_bit_16",
+                    "ecc_bit_17",
+                    "ecc_bit_18",
+                    "ecc_bit_19",
+                    "ecc_bit_20",
+                    "ecc_bit_21",
+                    "ecc_bit_22",
+                    "ecc_bit_23",
+                    "ecc_bit_24",
+                    "ecc_bit_25",
+                    "ecc_bit_26",
+                    "ecc_bit_27",
+                    "ecc_bit_28",
+                    "ecc_bit_29",
+                    "ecc_bit_30",
+                    "ecc_bit_31",
                 ],
             )
         )
@@ -624,8 +670,8 @@ class DataGenerator(metaclass=abc.ABCMeta):
         :return: 处理后的数据
         """
 
-        file_list = os.listdir(processed_df_files_dir)
-        file_list = [x for x in file_list if x.endswith(".feather")]
+        file_list = os.listdir(windows_json_files_dir)
+        file_list = [x for x in file_list if x.endswith(".json")]
         file_list.sort()
 
         if self.config.USE_MULTI_PROCESS:
@@ -935,7 +981,9 @@ def process_windows(windows_dir: str, processed_df_dir: str, output_dir:str, chu
     os.makedirs(output_dir, exist_ok=True)
     buffer_dict = {"features":[],
                     "label":[],
-                    "Window_LogTime": []
+                    "Window_LogTime": [],
+                    "sn_name": [],
+                    "lens": []
                     }
     chunk_number = 1
     file_list = sorted(os.listdir(windows_dir))
@@ -948,6 +996,9 @@ def process_windows(windows_dir: str, processed_df_dir: str, output_dir:str, chu
         processed_df = feather.read_dataframe(os.path.join(processed_df_dir, sn_name + '.feather'))
         for i in range(len(windows_dict["start_indices"])):
             win_df = processed_df.iloc[windows_dict["start_indices"][i]:windows_dict["end_indices"][i]]
+            # 统计window长度
+            lens = win_df.shape[0]
+            win_df = win_df.assign(Lens = lens)
             
             win_df = win_df.assign(
                 Count=win_df.groupby("position_and_parity")[
@@ -957,18 +1008,17 @@ def process_windows(windows_dir: str, processed_df_dir: str, output_dir:str, chu
             # 去重
             # TODO: 是否去重待定
             win_df = win_df.drop_duplicates(
-                subset="position_and_parity", keep="first"
+                subset="position_and_parity", keep="last"
             )
             
-            # 统计window长度
-            lens = win_df.shape[0]
-            win_df = win_df.assign(Lens = lens)
-            
             win_df = win_df.drop('CellId', axis=1).drop('position_and_parity', axis=1)
+            
             window_list = win_df.values.tolist()
             buffer_dict["features"].append(window_list)
             buffer_dict["label"].append(windows_dict["labels"][i])
-            buffer_dict["Window_LogTime"].append(windows_dict["end_indices"][i])
+            buffer_dict["Window_LogTime"].append(windows_dict["end_times"][i])
+            buffer_dict["sn_name"].append(sn_name)
+            buffer_dict["lens"].append(len(window_list))
             if len(buffer_dict["features"]) == chunk_size:
                 output_file = os.path.join(output_dir, f'chunk_{chunk_number}.json')
                 with open(output_file, "w") as out_f:
@@ -978,7 +1028,9 @@ def process_windows(windows_dir: str, processed_df_dir: str, output_dir:str, chu
                 buffer_dict = {
                     "features":[],
                     "label":[],
-                    "Window_LogTime": []
+                    "Window_LogTime": [],
+                    "sn_name": [],
+                    "lens": []
                 }
                 chunk_number += 1
     # 写入剩余数据
@@ -988,6 +1040,7 @@ def process_windows(windows_dir: str, processed_df_dir: str, output_dir:str, chu
             json_str = json.dumps(buffer_dict, indent=3)
             out_f.write(json_str)
             out_f.close()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -1049,14 +1102,16 @@ if __name__ == "__main__":
     negative_data_generator.generate_and_save_data()
 
     # 初始化测试数据生成器，生成并保存测试数据
-    test_data_generator = TestDataGenerator(config)
-    test_data_generator.generate_and_save_data()
+    # test_data_generator = TestDataGenerator(config)
+    # test_data_generator.generate_and_save_data()
     
     process_windows(pos_windows_json_files_dir, processed_df_files_dir, processed_pos_windows_dir)
     process_windows(neg_windows_json_files_dir, processed_df_files_dir, processed_neg_windows_dir)
-    process_windows(test_windows_json_files_dir, processed_df_files_dir, processed_test_windows_dir)
+    # process_windows(test_windows_json_files_dir, processed_df_files_dir, processed_test_windows_dir)
 
     exit(0)
+    
+    
     # 初始化模型类 MFPmodel，加载训练数据并训练模型
     model = MFPmodel(config)
     model.load_train_data()  # 加载训练数据

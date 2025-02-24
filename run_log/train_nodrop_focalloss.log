@@ -1,0 +1,5 @@
+Epoch 1
+Train Loss: 0.0178 | Acc: 0.9548 | F1: 0.0119 | AUC: 0.5172
+    Train Confusion: [tn, fp, fn, tp] [np.int64(4112924), np.int64(82), np.int64(194881), np.int64(1172)]
+Val Loss: 0.0170 | Acc: 0.9567 | F1: 0.0018 | AUC: 0.5188
+    Val Confusion: [tn, fp, fn, tp] [np.int64(458112), np.int64(0), np.int64(20717), np.int64(19)]
