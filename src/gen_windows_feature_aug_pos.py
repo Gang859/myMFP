@@ -23,11 +23,11 @@ ONE_DAY = 86400  # 一天的秒数（60秒 * 60分钟 * 24小时）
 processed_df_files_dir = "/backup/home/zhangrengang/workspace/Doc/processed_df"
 # output_feature_dir = "/mnt/zhangrengang/data/dump/"
 output_feature_dir = "/backup/home/zhangrengang/workspace/Doc/win30m_feature_with_ecc/"
-windows_json_files_dir = output_feature_dir + "windows_test_interval"
-pos_windows_json_files_dir = output_feature_dir + "pos_windows"
+windows_json_files_dir = output_feature_dir + "windows_aug_pos_interval"
+pos_windows_json_files_dir = output_feature_dir + "aug_pos_windows"
 neg_windows_json_files_dir = output_feature_dir + "neg_windows"
 test_windows_json_files_dir = output_feature_dir + "test_windows"
-processed_pos_windows_dir = output_feature_dir + "pos_windows_feature"
+processed_pos_windows_dir = output_feature_dir + "aug_pos_windows_feature"
 processed_neg_windows_dir = output_feature_dir + "neg_windows_feature"
 processed_test_windows_dir = output_feature_dir + "test_windows_feature"
 
@@ -88,7 +88,7 @@ class Config(object):
     test_data_range: tuple = ("2024-06-01", "2024-08-01")
 
     # 特征提取的时间间隔(秒), 为了更高的性能, 可以修改为 15 * ONE_MINUTE 或 30 * ONE_MINUTE
-    feature_interval: int = 90 * ONE_MINUTE
+    feature_interval: int = 30 * ONE_MINUTE
 
     # dump json path
     s1_window_data_json: str = "To be filled"
@@ -570,10 +570,25 @@ class FeatureFactory(object):
 
         # 获取处理后的 DataFrame
         new_df = self._get_processed_df(sn_file)
-
-        # 根据生成特征的间隔, 计算时间索引
-        new_df["time_index"] = new_df["LogTime"] // self.config.feature_interval
+        
+        sn_name = sn_file.split('.')[0]
+        ticket = pd.read_csv(self.config.ticket_path)
+        ticket_sn_map = {
+            sn: sn_t
+            for sn, sn_t in zip(list(ticket["sn_name"]), list(ticket["alarm_time"]))
+        }
+        
+        if sn_name not in ticket_sn_map:
+            return None
+        alarm_time = ticket_sn_map[sn_name]
+        
         log_times = new_df["LogTime"].values
+        
+        # 根据生成特征的间隔, 计算时间索引
+        # new_df["time_index"] = new_df["LogTime"] // self.config.feature_interval
+        new_df["time_index"] = new_df["LogTime"].apply(
+            lambda log_time: self.calculate_time_index(log_time, alarm_time)
+        )
 
         # 计算每个时间窗口的结束时间和开始时间, 每次生成特征最多用 max_window_size 的历史数据
         max_window_size = max(self.config.TIME_RELATED_LIST)
@@ -595,6 +610,24 @@ class FeatureFactory(object):
             zrg_file.write(json_str)
             zrg_file.close()
 
+    def calculate_time_index(self, log_time, alarm_time):
+        """
+        根据 log_time 和 alarm_time 的差异来计算 time_index
+        """
+        time_diff = alarm_time - log_time
+
+        # 判断时间差并设置 feature_interval
+        if 0 <= time_diff <= 7 * 24 * 3600:  # 7天以内，interval=60
+            feature_interval = 5 * ONE_MINUTE
+        elif 15 * 24 * 3600 >= time_diff > 7 * 24 * 3600:  # 7到15天之间，interval=15minuet
+            feature_interval = 15 * ONE_MINUTE
+        elif 30 * 24 * 3600 >= time_diff > 15 * 24 * 3600:  # 15到30天之间，interval=30minuet
+            feature_interval = 30 * ONE_MINUTE
+        else:  # 超过30天，使用原来的 interval
+            feature_interval = self.config.feature_interval
+
+        # 计算 time_index
+        return log_time // feature_interval
 
 class DataGenerator(metaclass=abc.ABCMeta):
     """
@@ -1386,43 +1419,12 @@ if __name__ == "__main__":
     feature_factory.process_all_sn()  # 处理所有 SN 文件
 
     # # 初始化正样本数据生成器，生成并保存正样本数据
-    # positive_data_generator = PositiveDataGenerator(config)
-    # positive_data_generator.generate_and_save_data()
+    positive_data_generator = PositiveDataGenerator(config)
+    positive_data_generator.generate_and_save_data()
 
-    # # 初始化负样本数据生成器，生成并保存负样本数据
-    # negative_data_generator = NegativeDataGenerator(config)
-    # negative_data_generator.generate_and_save_data()
 
-    # 初始化测试数据生成器，生成并保存测试数据
-    test_data_generator = TestDataGenerator(config)
-    test_data_generator.generate_and_save_data()
-
-    # process_windows(pos_windows_json_files_dir,
-    #                 processed_df_files_dir, processed_pos_windows_dir)
-    # process_windows(neg_windows_json_files_dir,
-    #                 processed_df_files_dir, processed_neg_windows_dir)
-    process_windows(test_windows_json_files_dir, processed_df_files_dir, processed_test_windows_dir)
+    process_windows(pos_windows_json_files_dir,
+                    processed_df_files_dir, processed_pos_windows_dir)
 
     exit(0)
 
-    # 初始化模型类 MFPmodel，加载训练数据并训练模型
-    model = MFPmodel(config)
-    model.load_train_data()  # 加载训练数据
-    model.train()  # 训练模型
-    result = model.predict()  # 使用训练好的模型进行预测
-
-    # 将预测结果转换为提交格式
-    submission = []
-    for sn in result:  # 遍历每个 SN 的预测结果
-        for timestamp in result[sn]:  # 遍历每个时间戳
-            # 添加 SN 名称、预测时间戳和 SN 类型
-            submission.append([sn, timestamp, sn_type])
-
-    # 将提交数据转换为 DataFrame 并保存为 CSV 文件
-    submission = pd.DataFrame(
-        submission, columns=["sn_name",
-                             "prediction_timestamp", "serial_number_type"]
-    )
-    submission.to_csv(args.output_file, index=False, encoding="utf-8")
-
-    print()

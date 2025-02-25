@@ -5,7 +5,7 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, confusion_m
 from torch.utils.data import DataLoader
 import math
 import numpy as np
-from window_dataset import time_series_dataset, collate_func, MAX_SEQ_LEN
+from window_dataset import time_series_dataset, collate_func, MAX_SEQ_LEN, FEATURE_DIM
 from tqdm.auto import tqdm
 import warnings
 import os
@@ -15,7 +15,7 @@ warnings.filterwarnings("ignore")
 
 # 改进的Transformer分类模型
 class BinaryTransformer(nn.Module):
-    def __init__(self, input_dim=16, d_model=128, nhead=8, 
+    def __init__(self, input_dim=FEATURE_DIM, d_model=128, nhead=8, 
                  num_layers=4, max_seq_len=MAX_SEQ_LEN):
         super().__init__()
         self.layer_norm = nn.LayerNorm(d_model)
@@ -118,7 +118,7 @@ def train_epoch(model, loader, criterion, optimizer, device):
     auc = roc_auc_score(all_labels, all_preds)
     tn, fp, fn, tp = confusion_matrix(all_labels, predictions).ravel()
     
-    return avg_loss, acc, f1, auc, [tn, fp, fn, tp]
+    return avg_loss, acc, f1, auc, [int(tn), int(fp), int(fn), int(tp)]
 
 # 评估函数
 def evaluate(model, loader, criterion, device):
@@ -151,7 +151,7 @@ def evaluate(model, loader, criterion, device):
         'auc': roc_auc_score(all_labels, all_preds)
     }
     tn, fp, fn, tp = confusion_matrix(all_labels, predictions).ravel()
-    return metrics, [tn, fp, fn, tp] 
+    return metrics, [int(tn), int(fp), int(fn), int(tp)] 
 
 # 推理函数
 def predict(model, samples, device):
@@ -178,7 +178,7 @@ if __name__ == '__main__':
     device = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
     model = BinaryTransformer()
     
-    model_path = '/mnt/zhangrengang/model/best_model.pth'
+    model_path = '/mnt/zhangrengang/model/best_model_train_start_022513.pth'
     # 加载已有模型
     if os.path.exists(model_path):
         model.load_state_dict(torch.load(model_path))
@@ -188,7 +188,7 @@ if __name__ == '__main__':
     criterion = focal_loss(reduction = "mean")
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
     
-    dataset_path = "/mnt/zhangrengang/data/win30m_ds/"
+    dataset_path = "/backup/home/zhangrengang/workspace/Doc/win30m_feature_with_ecc/"
     ds = time_series_dataset(dataset_path, is_train=True)
     # train_ds = time_series_dataset(dataset_path, is_train=True)
     # test_ds = time_series_dataset(dataset_path, is_train=False)

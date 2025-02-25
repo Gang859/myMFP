@@ -4,12 +4,13 @@ import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-MAX_SEQ_LEN = 128
+MAX_SEQ_LEN = 512
+FEATURE_DIM = 48
 
 def pad_sequences(sequences, maxlen=MAX_SEQ_LEN, padding='front', value=0):
     
     mask = np.full((len(sequences), maxlen), 0)
-    padded_sequences = np.full((len(sequences), maxlen, 16), value)
+    padded_sequences = np.full((len(sequences), maxlen, FEATURE_DIM), value)
     
     for i, seq in enumerate(sequences):
         if padding == 'post':
@@ -101,5 +102,5 @@ if __name__ == "__main__":
     train_loader = DataLoader(dataset, batch_size=batch_size, num_workers=64, shuffle=True,collate_fn=collate_func)
     for batch_idx, batch in enumerate(train_loader):
         inputs,labels,masks,ids=batch['features'],batch['label'],batch['mask'],batch['id']
-
+        # (512, 128, 31) 
         # print(inputs.shape,labels.shape,masks.shape)
