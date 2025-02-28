@@ -24,7 +24,7 @@ class BinaryTransformer(nn.Module):
         self.pos_encoder = nn.Embedding(max_seq_len, d_model)
         
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=nhead, dim_feedforward=512, 
+            d_model=d_model, nhead=nhead, dim_feedforward=d_model*4, 
             batch_first=True, dropout=0.0
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
@@ -176,15 +176,15 @@ def predict(model, samples, device):
 if __name__ == '__main__':
     # 初始化组件
     device = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
-    model = BinaryTransformer()
     
+    model = BinaryTransformer()
     model_path = '/mnt/zhangrengang/model/best_model_train_start_022513.pth'
     # 加载已有模型
     if os.path.exists(model_path):
         model.load_state_dict(torch.load(model_path))
-    
     model = model.to(device)
     # criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([30])).to(device)
+    # 损失函数和优化器设置
     criterion = focal_loss(reduction = "mean")
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
     

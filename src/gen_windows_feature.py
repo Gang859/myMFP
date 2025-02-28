@@ -20,25 +20,6 @@ ONE_MINUTE = 60  # 一分钟的秒数
 ONE_HOUR = 3600  # 一小时的秒数（60秒 * 60分钟）
 ONE_DAY = 86400  # 一天的秒数（60秒 * 60分钟 * 24小时）
 
-processed_df_files_dir = "/backup/home/zhangrengang/workspace/Doc/processed_df"
-# output_feature_dir = "/mnt/zhangrengang/data/dump/"
-output_feature_dir = "/backup/home/zhangrengang/workspace/Doc/win30m_feature_with_ecc/"
-windows_json_files_dir = output_feature_dir + "windows_test_interval"
-pos_windows_json_files_dir = output_feature_dir + "pos_windows"
-neg_windows_json_files_dir = output_feature_dir + "neg_windows"
-test_windows_json_files_dir = output_feature_dir + "test_windows"
-processed_pos_windows_dir = output_feature_dir + "pos_windows_feature"
-processed_neg_windows_dir = output_feature_dir + "neg_windows_feature"
-processed_test_windows_dir = output_feature_dir + "test_windows_feature"
-
-os.makedirs(processed_df_files_dir, exist_ok=True)
-os.makedirs(windows_json_files_dir, exist_ok=True)
-os.makedirs(pos_windows_json_files_dir, exist_ok=True)
-os.makedirs(neg_windows_json_files_dir, exist_ok=True)
-os.makedirs(test_windows_json_files_dir, exist_ok=True)
-os.makedirs(processed_pos_windows_dir, exist_ok=True)
-os.makedirs(processed_neg_windows_dir, exist_ok=True)
-os.makedirs(processed_test_windows_dir, exist_ok=True)
 
 
 @dataclass
@@ -70,8 +51,8 @@ class Config(object):
     # 缺失值填充的默认值
     IMPUTE_VALUE: int = field(default=-1, init=False)
 
-    # 是否使用多进程
-    USE_MULTI_PROCESS: bool = field(default=True, init=False)
+    # 是否使用多进程 TODO
+    USE_MULTI_PROCESS: bool = field(default=False, init=False)
 
     # 如果使用多进程, 并行时 worker 的数量
     WORKER_NUM: int = field(default=32, init=False)
@@ -88,10 +69,11 @@ class Config(object):
     test_data_range: tuple = ("2024-06-01", "2024-08-01")
 
     # 特征提取的时间间隔(秒), 为了更高的性能, 可以修改为 15 * ONE_MINUTE 或 30 * ONE_MINUTE
-    feature_interval: int = 90 * ONE_MINUTE
+    # 生成训练数据：interval = 30 min
+    # 生成测试数据：interval = 90 min
+    feature_interval: int = 30 * ONE_MINUTE
 
     # dump json path
-    s1_window_data_json: str = "To be filled"
 
 
 class FeatureFactory(object):
@@ -530,7 +512,7 @@ class FeatureFactory(object):
         )
         return processed_df
 
-    def process_all_sn(self) -> NoReturn:
+    def process_all_sn(self, aug_pos:bool=False) -> NoReturn:
         """
         处理所有 sn 文件, 并保存特征, 支持多进程处理以提高效率
         """
@@ -550,14 +532,19 @@ class FeatureFactory(object):
                 list(
                     tqdm(
                         pool.imap(
-                            self.process_single_sn_for_transfomer, sn_files),
+                            self.process_single_sn_for_transfomer_aug_pos if aug_pos else self.process_single_sn_for_transfomer, 
+                            sn_files
+                        ),
                         total=len(sn_files),
                         desc="Generating features",
                     )
                 )
         else:
             for sn_file in tqdm(sn_files, desc="Generating features"):
-                self.process_single_sn_for_transfomer(sn_file)
+                if aug_pos:
+                    self.process_single_sn_for_transfomer_aug_pos(sn_file)
+                else:
+                    self.process_single_sn_for_transfomer(sn_file)
 
     def process_single_sn_for_transfomer(self, sn_file: str) -> NoReturn:
         id = 0
@@ -595,7 +582,77 @@ class FeatureFactory(object):
             zrg_file.write(json_str)
             zrg_file.close()
 
+    def process_single_sn_for_transfomer_aug_pos(self, sn_file: str) -> NoReturn:
+        id = 0
+        zrg_dict = {"start_indices": [],
+                    "end_indices": [],
+                    "end_times": [],
+                    "labels": [],
+                    "lens": []
+                    }
 
+        # 获取处理后的 DataFrame
+        new_df = self._get_processed_df(sn_file)
+        
+        sn_name = sn_file.split('.')[0]
+        ticket = pd.read_csv(self.config.ticket_path)
+        ticket_sn_map = {
+            sn: sn_t
+            for sn, sn_t in zip(list(ticket["sn_name"]), list(ticket["alarm_time"]))
+        }
+        
+        if sn_name not in ticket_sn_map:
+            return None
+        alarm_time = ticket_sn_map[sn_name]
+        log_times = new_df["LogTime"].values
+        
+        # 根据生成特征的间隔, 计算时间索引
+        # new_df["time_index"] = new_df["LogTime"] // self.config.feature_interval
+        new_df["time_index"] = new_df["LogTime"].apply(
+            lambda log_time: self.calculate_time_index(log_time, alarm_time)
+        )
+
+        # 计算每个时间窗口的结束时间和开始时间, 每次生成特征最多用 max_window_size 的历史数据
+        max_window_size = max(self.config.TIME_RELATED_LIST)
+        window_end_times = new_df.groupby("time_index")["LogTime"].max().values
+        window_start_times = window_end_times - max_window_size
+        
+
+        # 根据时间窗口的起始和结束时间, 找到对应的数据索引
+        start_indices = np.searchsorted(
+            log_times, window_start_times, side="left")
+        end_indices = np.searchsorted(
+            log_times, window_end_times, side="right")
+
+        zrg_dict["start_indices"] = start_indices.tolist()
+        zrg_dict["end_indices"] = end_indices.tolist()
+        zrg_dict["end_times"] = window_end_times.tolist()
+        zrg_dict["lens"] = (end_indices - start_indices).tolist()
+        
+        with open(os.path.join(windows_json_files_dir, sn_file.split(".")[0] + '.json'), "w") as zrg_file:
+            json_str = json.dumps(zrg_dict, indent=4)
+            zrg_file.write(json_str)
+            zrg_file.close()
+    
+    def calculate_time_index(self, log_time, alarm_time):
+        """
+        根据 log_time 和 alarm_time 的差异来计算 time_index
+        """
+        time_diff = alarm_time - log_time
+
+        # 判断时间差并设置 feature_interval
+        if 0 <= time_diff <= 7 * 24 * ONE_HOUR:  # 7天以内，interval=60
+            feature_interval = 5 * ONE_MINUTE
+        elif 15 * 24 * ONE_HOUR >= time_diff > 7 * 24 * ONE_HOUR:  # 7到15天之间，interval=15minuet
+            feature_interval = 15 * ONE_MINUTE
+        elif 30 * 24 * ONE_HOUR >= time_diff > 15 * 24 * ONE_HOUR:  # 15到30天之间，interval=30minuet
+            feature_interval = 30 * ONE_MINUTE
+        else:  # 超过30天，使用原来的 interval
+            feature_interval = self.config.feature_interval
+
+        # 计算 time_index
+        return log_time // feature_interval
+    
 class DataGenerator(metaclass=abc.ABCMeta):
     """
     数据生成器基类, 用于生成训练和测试数据
@@ -1334,25 +1391,63 @@ def process_windows(windows_dir: str, processed_df_dir: str, output_dir: str, ch
 
 
 if __name__ == "__main__":
+    #-------------获取命令行参数
     parser = argparse.ArgumentParser()
-    parser.add_argument('--sn_type', type=str, default="A")
+    parser.add_argument('--sn_type', choices=["A", "B"], default="A")
     parser.add_argument('--test_stage', type=int, default=1)
     parser.add_argument('--data_path', type=str, required=True)
-    parser.add_argument('--feature_path', type=str, required=True)
-    parser.add_argument('--train_data_path', type=str, required=True)
-    parser.add_argument('--test_data_path', type=str, required=True)
     parser.add_argument('--ticket_path', type=str, required=True)
-    parser.add_argument('--output_file', type=str, required=True)
     parser.add_argument('--s1_train_start_month', type=str, default="01")
     parser.add_argument('--s1_train_end_month', type=str, default="06")
     parser.add_argument('--s1_test_end_month', type=str, default="08")
-    parser.add_argument('--s1_window_data_json', type=str, required=True)
-
+    parser.add_argument('--gen_pos', action='store_true')
+    parser.add_argument('--gen_neg', action='store_true')
+    parser.add_argument('--gen_test', action='store_true')
+    parser.add_argument('--gen_aug_pos', action='store_true')
     args = parser.parse_args()
+    
+    #-------------判断输入参数是否合理
+    if args.gen_test and (args.gen_pos or args.gen_neg):
+        assert False
+    if args.gen_test and args.gen_aug_pos:
+        assert False
+    if args.gen_aug_pos and (args.gen_pos or args.gen_neg):
+        assert False
+    
+    #-------------设置输出路径
+    processed_df_files_dir = f"/backup/home/zhangrengang/workspace/Doc/processed_df_type{args.sn_type}"
+    output_feature_dir = f"/backup/home/zhangrengang/workspace/Doc/win30m_feature_with_ecc_type{args.sn_type}/"
+    if args.gen_pos or args.gen_neg:
+        windows_json_files_dir = output_feature_dir + "windows"
+    elif args.gen_test:
+        windows_json_files_dir = output_feature_dir + "windows_test_interval"
+    else:
+        windows_json_files_dir = output_feature_dir + "windows_aug_pos_interval"
+    
+    pos_windows_json_files_dir = output_feature_dir + "pos_windows"
+    if args.gen_aug_pos:
+        pos_windows_json_files_dir = output_feature_dir + "aug_pos_windows"
+    neg_windows_json_files_dir = output_feature_dir + "neg_windows"
+    test_windows_json_files_dir = output_feature_dir + "test_windows"
+    
+    processed_pos_windows_dir = output_feature_dir + "pos_windows_feature"
+    if args.gen_aug_pos:
+        processed_pos_windows_dir = output_feature_dir + "aug_pos_windows_feature"
+    processed_neg_windows_dir = output_feature_dir + "neg_windows_feature"
+    processed_test_windows_dir = output_feature_dir + "test_windows_feature"
 
+    os.makedirs(processed_df_files_dir, exist_ok=True)
+    os.makedirs(windows_json_files_dir, exist_ok=True)
+    os.makedirs(pos_windows_json_files_dir, exist_ok=True)
+    os.makedirs(neg_windows_json_files_dir, exist_ok=True)
+    os.makedirs(test_windows_json_files_dir, exist_ok=True)
+    os.makedirs(processed_pos_windows_dir, exist_ok=True)
+    os.makedirs(processed_neg_windows_dir, exist_ok=True)
+    os.makedirs(processed_test_windows_dir, exist_ok=True)
+
+    #-------------配置参数Config
     sn_type = args.sn_type  # SN 类型, A 或 B, 这里以 A 类型为例
     test_stage = args.test_stage  # 测试阶段, 1 或 2, 这里以 Stage 1 为例
-
     # 设置训练数据的时间范围
     train_data_range: tuple = (
         f"2024-{args.s1_train_start_month}-01", f"2024-{args.s1_train_end_month}-01")
@@ -1367,62 +1462,35 @@ if __name__ == "__main__":
     # 初始化配置类 Config，设置数据路径、特征路径、训练数据路径、测试数据路径等
     config = Config(
         data_path=os.path.join(args.data_path, f"type_{sn_type}"),  # 原始数据集路径
-        feature_path=args.feature_path   # 生成的特征数据路径
-        ,
-        train_data_path=os.path.join(
-            args.train_data_path, f"type_{sn_type}"  # 生成的训练数据路径
-        ),
-        test_data_path=os.path.join(
-            args.test_data_path, f"type_{sn_type}_{test_stage}"  # 生成的测试数据路径
-        ),
         train_date_range=train_data_range,
         test_data_range=test_data_range,  # 测试数据时间范围
         ticket_path=args.ticket_path,  # 维修单路径
-        s1_window_data_json=args.s1_window_data_json
+        feature_interval = 90 * ONE_MINUTE if args.gen_test else 30 * ONE_MINUTE
     )
 
     # 初始化特征工厂类 FeatureFactory，用于处理 SN 文件并生成特征
     feature_factory = FeatureFactory(config)
-    feature_factory.process_all_sn()  # 处理所有 SN 文件
+    if args.gen_aug_pos:
+        feature_factory.process_all_sn(aug_pos=True)  # 处理所有 SN 文件
+    else:
+        feature_factory.process_all_sn()  # 处理所有 SN 文件
 
     # # 初始化正样本数据生成器，生成并保存正样本数据
-    # positive_data_generator = PositiveDataGenerator(config)
-    # positive_data_generator.generate_and_save_data()
+    if args.gen_pos or args.gen_aug_pos:
+        positive_data_generator = PositiveDataGenerator(config)
+        positive_data_generator.generate_and_save_data()
+        process_windows(pos_windows_json_files_dir,
+                        processed_df_files_dir, processed_pos_windows_dir)
 
     # # 初始化负样本数据生成器，生成并保存负样本数据
-    # negative_data_generator = NegativeDataGenerator(config)
-    # negative_data_generator.generate_and_save_data()
+    if args.gen_neg:
+        negative_data_generator = NegativeDataGenerator(config)
+        negative_data_generator.generate_and_save_data()
+        process_windows(neg_windows_json_files_dir,
+                        processed_df_files_dir, processed_neg_windows_dir)
 
     # 初始化测试数据生成器，生成并保存测试数据
-    test_data_generator = TestDataGenerator(config)
-    test_data_generator.generate_and_save_data()
-
-    # process_windows(pos_windows_json_files_dir,
-    #                 processed_df_files_dir, processed_pos_windows_dir)
-    # process_windows(neg_windows_json_files_dir,
-    #                 processed_df_files_dir, processed_neg_windows_dir)
-    process_windows(test_windows_json_files_dir, processed_df_files_dir, processed_test_windows_dir)
-
-    exit(0)
-
-    # 初始化模型类 MFPmodel，加载训练数据并训练模型
-    model = MFPmodel(config)
-    model.load_train_data()  # 加载训练数据
-    model.train()  # 训练模型
-    result = model.predict()  # 使用训练好的模型进行预测
-
-    # 将预测结果转换为提交格式
-    submission = []
-    for sn in result:  # 遍历每个 SN 的预测结果
-        for timestamp in result[sn]:  # 遍历每个时间戳
-            # 添加 SN 名称、预测时间戳和 SN 类型
-            submission.append([sn, timestamp, sn_type])
-
-    # 将提交数据转换为 DataFrame 并保存为 CSV 文件
-    submission = pd.DataFrame(
-        submission, columns=["sn_name",
-                             "prediction_timestamp", "serial_number_type"]
-    )
-    submission.to_csv(args.output_file, index=False, encoding="utf-8")
-
-    print()
+    if args.gen_test:
+        test_data_generator = TestDataGenerator(config)
+        test_data_generator.generate_and_save_data()
+        process_windows(test_windows_json_files_dir, processed_df_files_dir, processed_test_windows_dir)
