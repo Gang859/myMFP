@@ -28,12 +28,12 @@ def convert_feather_to_csv(input_path, output_path):
 
 if __name__ == "__main__":
     counter = 0
-    for feather_file in glob.glob("/mnt/zhangrengang/data/processed_df/*.feather"):
+    for feather_file in glob.glob("/mnt/zhangrengang/data/STIM_Data_test_05-06/STIM_processed_ce_df_typeA/*.feather"):
         csv_file = feather_file.replace(".feather", ".csv")
-        csv_file = csv_file.replace("data/", "tmp/")
+        csv_file = csv_file.replace("typeA/", "typeA_sample_csv/")
         convert_feather_to_csv(feather_file, csv_file)
         counter += 1
-        if counter > 3:
+        if counter > 20:
             break
         
     # # 设置命令行参数

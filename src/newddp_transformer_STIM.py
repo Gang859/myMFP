@@ -9,7 +9,7 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, confusion_m
 from torch.utils.data import DataLoader
 import math
 import numpy as np
-from window_dataset import time_series_dataset, collate_func, MAX_SEQ_LEN, FEATURE_DIM
+from window_dataset_STIM import time_series_dataset, collate_func, MAX_SEQ_LEN, FEATURE_DIM
 from tqdm.auto import tqdm
 import warnings
 import os
@@ -163,117 +163,154 @@ class BinaryTransformer2(nn.Module):
         # 分类输出
         return self.classifier(combined).squeeze(-1)
 
+class BinaryTransformer3(nn.Module):
+    def __init__(self, input_dim=FEATURE_DIM, d_model=128, nhead=8,
+                 num_layers=4, max_seq_len=MAX_SEQ_LEN):
+        super().__init__()
+        self.layer_norm1 = nn.LayerNorm(d_model)
+        self.layer_norm2 = nn.LayerNorm(d_model)
 
-# 完整的训练流程
-def train_epoch(model, loader, criterion, optimizer, device):
-    model.train()
-    total_loss = 0
-    loss_list = []
-    all_preds = []
-    all_labels = []
+        self.embedding = nn.Linear(input_dim, d_model)
+        
+        self.pos_encoder = nn.Embedding(max_seq_len, d_model)
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=d_model*4,
+            batch_first=True, dropout=0.2
+        )
 
-    # 创建进度条
-    progress_bar = tqdm(
-        enumerate(loader),
-        total=len(loader),
-        desc=f"Training",
-        bar_format="{l_bar}{bar:20}{r_bar}",
-        dynamic_ncols=True
-    )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
 
-    for batch_idx, batch in progress_bar:
-        inputs = batch['features'].to(device)
-        labels = batch['label'].float().to(device)
-        masks = batch['mask'].to(device)
+        # 改进的分类头
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, 64),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 1)
+        )
 
-        optimizer.zero_grad()
-        outputs = model(inputs, masks)
+    def forward(self, x, mask):
+        # x: (B, L, F), mask: (B, L)
+        seq_len = x.size(1)
 
-        loss = criterion(outputs, labels)
+        # 嵌入层
+        x = self.embedding(x) * math.sqrt(self.embedding.out_features)
 
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
+        # 位置编码
+        positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
+        x = x + self.pos_encoder(positions)
 
-        total_loss += loss.item()
-        loss_list.append(loss.item())
-        probs = torch.sigmoid(outputs).detach()
-        all_preds.extend(probs.cpu().numpy())
-        all_labels.extend(labels.cpu().numpy())
+        # 正则化
+        x = self.layer_norm1(x)
 
-        # 实时更新进度条描述
-        avg_loss = total_loss / (batch_idx + 1)
-        progress_bar.set_postfix({
-            "avg_loss": f"{avg_loss:.4f}",
-            "loss": f"{loss_list[-1]:.4f}",
-            "lr": f"{optimizer.param_groups[0]['lr']:.2e}"
-        })
+        # Transformer处理
+        x = self.transformer(x, src_key_padding_mask=~mask)
 
-    # 关闭进度条
-    progress_bar.close()
+        # 池化层（带mask的平均池化）
+        x = x * mask.unsqueeze(-1)
 
-    # 计算指标
-    avg_loss = total_loss / len(loader)
-    predictions = (np.array(all_preds) > 0.5).astype(int)
-    acc = accuracy_score(all_labels, predictions)
-    f1 = f1_score(all_labels, predictions)
-    auc = roc_auc_score(all_labels, all_preds)
-    tn, fp, fn, tp = confusion_matrix(all_labels, predictions).ravel()
+        pooled = x.sum(dim=1) / mask.sum(dim=1, keepdim=True).clamp(min=1e-9)
 
-    return avg_loss, acc, f1, auc, [int(tn), int(fp), int(fn), int(tp)]
 
-# 评估函数
-def evaluate(model, loader, criterion, device):
-    model.eval()
-    total_loss = 0
-    all_preds = []
-    all_labels = []
+        # 分类输出
+        return self.classifier(pooled).squeeze(-1)
 
-    with torch.no_grad():
-        for batch in loader:
-            inputs = batch['features'].to(device)
-            labels = batch['label'].float().to(device)
-            masks = batch['mask'].to(device)
+class BinaryTransformer4(nn.Module):
+    def __init__(self, input_dim=FEATURE_DIM, d_model=128, nhead=8,
+                 num_layers=4, max_seq_len=MAX_SEQ_LEN):
+        super().__init__()
+        self.layer_norm1 = nn.LayerNorm(d_model)
+        self.layer_norm2 = nn.LayerNorm(d_model)
 
-            outputs = model(inputs, masks)
-            loss = criterion(outputs, labels)
+        self.embedding = nn.Linear(input_dim, d_model)
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=d_model*4,
+            batch_first=True, dropout=0.2
+        )
 
-            total_loss += loss.item()
-            probs = torch.sigmoid(outputs).cpu().numpy()
-            all_preds.extend(probs)
-            all_labels.extend(labels.cpu().numpy())
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
 
-    avg_loss = total_loss / len(loader)
-    predictions = (np.array(all_preds) > 0.5).astype(int)
+        # 改进的分类头
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, 256),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, 1)
+        )
 
-    metrics = {
-        'loss': avg_loss,
-        'accuracy': accuracy_score(all_labels, predictions),
-        'f1': f1_score(all_labels, predictions),
-        'auc': roc_auc_score(all_labels, all_preds)
-    }
-    tn, fp, fn, tp = confusion_matrix(all_labels, predictions).ravel()
-    return metrics, [int(tn), int(fp), int(fn), int(tp)]
+    def forward(self, x, mask):
+        # x: (B, L, F), mask: (B, L)
+        seq_len = x.size(1)
+    
+        # 嵌入层
+        x = self.embedding(x) 
 
-# 推理函数
-def predict(model, samples, device):
-    """
-    支持批量推理
-    Args:
-        samples: list of dicts {'features': tensor(seq_len, 16), 'mask': tensor(seq_len)}
-    Returns:
-        probs: numpy array of probabilities
-    """
-    model.eval()
-    processed = collate_func(samples)  # 使用相同的collate函数
-    inputs = processed['features'].to(device)
-    masks = processed['mask'].to(device)
+        # 正则化
+        x = self.layer_norm1(x)
 
-    with torch.no_grad():
-        logits = model(inputs, masks)
-        probs = torch.sigmoid(logits).cpu().numpy()
-    return probs
+        # Transformer处理
+        x = self.transformer(x, src_key_padding_mask=~mask)
 
+        # 正则化
+        x = self.layer_norm2(x)
+
+        # 分类输出
+        return self.classifier(x[:,-1,:]).squeeze(-1)
+
+class BinaryTransformer5(nn.Module):
+    def __init__(self, input_dim=FEATURE_DIM, d_model=128, nhead=8,
+                 num_layers=4, max_seq_len=MAX_SEQ_LEN):
+        super().__init__()
+        self.layer_norm1 = nn.LayerNorm(d_model)
+        self.layer_norm2 = nn.LayerNorm(d_model)
+
+        self.embedding = nn.Linear(input_dim, d_model)
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=d_model*4,
+            batch_first=True, dropout=0.2
+        )
+
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
+
+        # sn embedding
+        self.sn_embedding = nn.Sequential(
+            nn.Linear(1, 64),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 64)
+        )
+
+        # 改进的分类头
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model + 64, 256),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, 1)
+        )
+
+    def forward(self, x, mask, sn_idx):
+        # x: (B, L, F), mask: (B, L)
+        seq_len = x.size(1)
+    
+        # 嵌入层
+        x = self.embedding(x) 
+
+        # 正则化
+        x = self.layer_norm1(x)
+
+        # Transformer处理
+        x = self.transformer(x, src_key_padding_mask=~mask)
+
+        # 正则化
+        x = self.layer_norm2(x)
+
+        # sn_name embedding
+        sn_embedding = self.sn_embedding(sn_idx)
+        
+        # 分类输出
+        return self.classifier(torch.cat([x[:,-1,:], sn_embedding], dim=1)).squeeze(-1)
 
 def get_parse_args():
     import argparse
@@ -307,10 +344,19 @@ def get_parse_args():
                         help='1, 2')
     parser.add_argument('--sn_type', default='A', choices=['A', 'B'],
                         help='sn_type')
-    parser.add_argument('--metric', default='loss',
+    parser.add_argument('--metric', default='obs',
                         help='metric')
     parser.add_argument('--find_opt_threadhold', action = 'store_true',
                         help='find_opt_threadhold')
+    parser.add_argument('--is_with_sn_idx', action = 'store_true',
+                    help='is_with_sn_idx')
+    parser.add_argument('--lr_decay_rate', type=float, default=0.5,
+                        help='lr_decay_rate')
+    parser.add_argument('--lr_decay_step', type=int, default=50,
+                        help='lr_decay_step')
+    parser.add_argument('--specific_lr', type=float, default=-1,
+                        help='specific_lr')
+
     args = parser.parse_args()
     args.gpus_str = args.gpus
     args.gpus = [int(gpu) for gpu in args.gpus.split(',')]
@@ -319,17 +365,19 @@ def get_parse_args():
     args.exp_dir = os.path.join(args.root_dir, 'exp', args.task)
     args.save_dir = os.path.join(args.exp_dir, args.exp_id)
     args.debug_dir = os.path.join(args.save_dir, 'debug')
-    args.random_seed = 3407
+    args.random_seed = 3409
     args.local_rank = 0
     return args
-
 
 class Trainer(object):
     def __init__(self, args, model, optimizer):
         self.args = args
         self.optimizer = optimizer
         print(args.device)
-        self.model_with_loss = ModelWithLoss(model, args.gpus, args.device)
+        if args.is_with_sn_idx:
+            self.model_with_loss = ModelWithLoss_with_sn_idxs(model, args.gpus, args.device)
+        else:
+            self.model_with_loss = ModelWithLoss(model, args.gpus, args.device)
 
     def set_device(self, device, local_rank, gpus):
         if len(gpus) > 1:
@@ -345,7 +393,20 @@ class Trainer(object):
             for k, v in state.items():
                 if isinstance(v, torch.Tensor):
                     state[k] = v.to(device=device, non_blocking=True)
-
+    
+    def get_unique_str(self, str_list):
+        list_of_unique_strs = []
+        unique_strs = set(str_list)
+        for unique_str in unique_strs:
+            list_of_unique_strs.append(unique_str)
+        return list_of_unique_strs
+    
+    def check_sn_diversity(self, fp_sn_names, fn_sn_names, tp_sn_names):
+        fp_sn_names_unique = self.get_unique_str(fp_sn_names)
+        fn_sn_names_unique = self.get_unique_str(fn_sn_names)
+        tp_sn_names_unique = self.get_unique_str(tp_sn_names)
+        return len(fp_sn_names_unique), len(fn_sn_names_unique), len(tp_sn_names_unique)
+    
     def run_epoch(self, phase, epoch, dataset, local_rank):
         model_with_loss = self.model_with_loss
         # --------------------------- phase setting
@@ -370,6 +431,9 @@ class Trainer(object):
         auc_list = []
         f1_list = []
         acc_list = []
+        fp_unique_num_list = []
+        fn_unique_num_list = []
+        tp_unique_num_list = []
         if local_rank == 0:
             bar = Bar('\033[1;31;42m{}/{}'.format(args.task,
                       args.exp_id), max=num_iters)
@@ -378,15 +442,29 @@ class Trainer(object):
         for iter_id, batch in enumerate(dataset):
             if iter_id >= num_iters:
                 break
-            if len(self.args.gpus) == 1:
-                batch = batch.to(self.args.device)
             data_time.update(time.time() - end)
             # --------------------------- loss calculate
             outputs, labels, loss_stats = model_with_loss(batch)
             loss = loss_stats["loss"]
             probs = torch.sigmoid(outputs).detach()
-            all_preds.extend(probs.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
+            probs_nparray = probs.cpu().numpy()
+            labels_nparray = labels.cpu().numpy()
+            all_preds.extend(probs_nparray)
+            all_labels.extend(labels_nparray)
+            fp_sn_names = []
+            fn_sn_names = []
+            tp_sn_names = []
+            for i in range(len(probs_nparray)):
+                if probs_nparray[i] >= 0.5 and labels_nparray[i] >= 0.5:
+                    tp_sn_names.append(batch["id"][i])
+                if probs_nparray[i] < 0.5 and labels_nparray[i] >= 0.5:
+                    fn_sn_names.append(batch["id"][i])
+                if probs_nparray[i] > 0.5 and labels_nparray[i] < 0.5:
+                    fp_sn_names.append(batch["id"][i])
+            unique_fp_num, unique_fn_num, unique_tp_num = self.check_sn_diversity(fp_sn_names, fn_sn_names, tp_sn_names)
+            fp_unique_num_list.append(unique_fp_num)
+            fn_unique_num_list.append(unique_fn_num)
+            tp_unique_num_list.append(unique_tp_num)
             # --------------------------- gradient calculate
             if phase == 'train':
                 self.optimizer.zero_grad()
@@ -427,6 +505,9 @@ class Trainer(object):
                 Bar.suffix = Bar.suffix + \
                     '\033[1;31;42m |tn, fp, fn, tp {tn} {fp} {fn} {tp}\033[0m'.format(
                         tn=int(tn), fp=int(fp), fn=int(fn), tp=int(tp))
+                Bar.suffix = Bar.suffix + \
+                    '\033[1;31;42m |unifp, unifn, unitp {unifp} {unifn} {unitp}\033[0m'.format(
+                        unifp=np.sum(fp_unique_num_list), unifn=np.sum(fn_unique_num_list), unitp=np.sum(tp_unique_num_list))
                 bar.next()
             del outputs, loss, loss_stats
 
@@ -444,7 +525,10 @@ class Trainer(object):
                 ret["auc"] = round(auc_list[-1],4)
             ret["acc"] = round(acc_list[-1],4)
             ret["f1"] = round(f1_list[-1],4)
-
+            ret["unifp"]=np.sum(fp_unique_num_list)
+            ret["unifn"]=np.sum(fn_unique_num_list)
+            ret["unitp"]=np.sum(tp_unique_num_list)
+            ret["obs"] = 2.0*float(ret["unitp"])/(2.0*float(ret["unitp"])+ret["unifn"]+ret["unifp"])
         return ret
 
     def val(self, epoch, data_loader, local_rank):
@@ -517,21 +601,42 @@ class Trainer(object):
         return best_thresh
 
 
+class ModelWithLoss_with_sn_idx(torch.nn.Module):
+    def __init__(self, model, gpus, device):
+        super(ModelWithLoss, self).__init__()
+        self.model = model
+        self.gpus = gpus
+        self.device = device
+        self.criterion = focal_loss(reduction="mean", gamma = 3, alpha = 0.15)
+        # self.criterion =  torch.nn.BCEWithLogitsLoss(weight=None, reduction='mean', pos_weight=torch.tensor(100))
+
+    def forward(self, batch):
+        inputs = batch['features'].to(self.device)
+        labels = batch['label'].float().to(self.device)
+        masks = batch['mask'].to(self.device)
+        sn_idxs = batch['sn_idx'].to(self.device)
+        
+        outputs = self.model(inputs, masks, sn_idxs)
+        loss = self.criterion(outputs, labels)
+        loss_stats = {'loss': loss}
+        return outputs, labels, loss_stats
+
+
 class ModelWithLoss(torch.nn.Module):
     def __init__(self, model, gpus, device):
         super(ModelWithLoss, self).__init__()
         self.model = model
         self.gpus = gpus
         self.device = device
-        self.criterion = focal_loss(reduction="mean", gamma = 3, alpha = 0.8)
+        # self.criterion = focal_loss(reduction="mean", gamma = 2, alpha = 0.15)
+        self.criterion =  torch.nn.BCEWithLogitsLoss(weight=None, reduction='mean')
 
     def forward(self, batch):
         inputs = batch['features'].to(self.device)
         labels = batch['label'].float().to(self.device)
         masks = batch['mask'].to(self.device)
-        win_level_features = batch['win_level_features'].to(self.device)
-
-        outputs = self.model(inputs, masks, win_level_features)
+        
+        outputs = self.model(inputs, masks)
         loss = self.criterion(outputs, labels)
         loss_stats = {'loss': loss}
         return outputs, labels, loss_stats
@@ -609,6 +714,8 @@ def load_model(model, model_path, optimizer=None, local_rank = 0, device='cuda')
         if 'optimizer' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
             start_epoch = checkpoint['epoch']
+            for param_group in optimizer.param_groups:
+                print(f"load lr : {param_group['lr']}")
         else:
             if local_rank == 0:
                 print('No optimizer parameters in checkpoint.')
@@ -652,11 +759,11 @@ def main(args):
     #################
     # Dataset
     #################
-    dataset_path = f"/backup/home/zhangrengang/workspace/Doc/win30m_feature_with_ecc_type{args.sn_type}/"
+    dataset_path = f"/backup/home/zhangrengang/workspace/STIM_Data_train05_test_06/STIM_win_feature_obv30d_neg60d_{args.sn_type}/"
     if args.local_rank == 0:
         print('\033[32m====> Using settings {}\033[0m'.format(args))
         print('==> Loading dataset from: ', dataset_path)
-    ds = time_series_dataset(dataset_path, is_train=True)
+    ds = time_series_dataset(dataset_path, is_train=True, is_aug_pos = True)
     train_size = int((0.9 * len(ds)))
     val_size = int((len(ds) - train_size))
     train_ds, val_ds = torch.utils.data.random_split(
@@ -664,8 +771,8 @@ def main(args):
     if args.local_rank == 0:
         print("Size: ", len(ds))
         print('Splitting the dataset into training and validation sets..')
-        print('# training circuits: ', train_size)
-        print('# validation circuits: ', val_size)
+        print('# training dataset: ', train_size)
+        print('# validation dataset: ', val_size)
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_ds,
                                                                     num_replicas=args.world_size,
                                                                     rank=args.rank)
@@ -674,7 +781,7 @@ def main(args):
                                                                   rank=args.rank)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, num_workers=args.num_workers,
                               shuffle=False, collate_fn=collate_func, sampler=train_sampler)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size//2, num_workers=args.num_workers,
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, num_workers=args.num_workers,
                             shuffle=False, collate_fn=collate_func, sampler=val_sampler)
 
     #################
@@ -684,19 +791,29 @@ def main(args):
         model = BinaryTransformer()
     elif args.model_type == 2:
         model = BinaryTransformer2()
-
+    elif args.model_type == 3:
+        model = BinaryTransformer3()
+    elif args.model_type == 4:
+        model = BinaryTransformer4()
+    elif args.model_type == 5:
+        model = BinaryTransformer5()
     if args.local_rank == 0:
         print('==> Creating model...')
         print(model)
         
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    cur_lr = args.lr
     
     start_epoch = 0
     if args.load_model != '':
-        model, _, start_epoch = load_model(model, args.load_model, optimizer, args.local_rank, args.device)
+        model, optimizer, start_epoch = load_model(model, args.load_model, optimizer, args.local_rank, args.device)
         mesg = "\033[32m====> Load model from : "+args.load_model+" ...\033[0m"
         print(mesg)
+    if args.specific_lr!=-1:
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = args.specific_lr
+        print(f"specific learning rate : {args.specific_lr}")
 
     trainer = Trainer(args, model, optimizer)
     trainer.set_device(args.device, args.local_rank, args.gpus)
@@ -711,6 +828,12 @@ def main(args):
     else:
         best = 1e10
         for epoch in range(start_epoch + 1, args.num_epochs + 1):
+            if epoch % args.lr_decay_step == 0: 
+                if args.local_rank == 0:
+                    print(f'Drop LR from {cur_lr} to {cur_lr * args.lr_decay_rate}')
+                cur_lr = cur_lr * args.lr_decay_rate
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = cur_lr
             mark = 'last'
             train_loader.sampler.set_epoch(epoch)
             log_dict_train = trainer.train(epoch, train_loader, args.local_rank)
@@ -746,9 +869,10 @@ def main(args):
                 else:
                     save_model(os.path.join(args.save_dir, 'model_last.pth'), epoch, model, optimizer)
                 logger.write('\n', args.local_rank)
+
         if args.local_rank == 0:
             logger.close()
-    destroy_process_group()
+    torch.distributed.destroy_process_group()
 
 
 def set_seed(args):

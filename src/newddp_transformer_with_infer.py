@@ -243,6 +243,8 @@ def get_parse_args():
                         help='default: #samples / batch_size.')
     parser.add_argument('--batch_size', type=int, default=1,
                         help='batch_size')
+    parser.add_argument('--model_type', type=int, default=1,
+                        help='1, 2')
     parser.add_argument('--metric', default='loss',
                         help='metric')
     parser.add_argument('--is_train', default=False,
@@ -595,7 +597,7 @@ def main(args):
     #################
     # Dataset
     #################
-    dataset_path = "/backup/home/zhangrengang/workspace/Doc/win30m_feature_with_ecc/"
+    dataset_path = "/backup/home/zhangrengang/workspace/Doc/win30m_feature_with_ecc_typeA/"
     if args.local_rank == 0:
         print('\033[32m====> Using settings {}\033[0m'.format(args))
         print('==> Loading dataset from: ', dataset_path)

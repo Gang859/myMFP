@@ -8,10 +8,10 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-# 最大的seq长度，对应一个窗口内保留的最大CE数量
-MAX_SEQ_LEN = 512
-# 特征维度，每个CE的特征数量，（对应token的长度）
-FEATURE_DIM = 48
+# 最大的seq长度，对应一个窗口内保留的最大sub window数量
+MAX_SEQ_LEN = 73
+# 特征维度，每个sub window的特征数量，（对应token的长度）
+FEATURE_DIM = 66
 
 # 对窗口进行pad，截断/补齐到MAX_SEQ_LEN
 
@@ -19,7 +19,7 @@ FEATURE_DIM = 48
 def pad_sequences(sequences, maxlen=MAX_SEQ_LEN, padding='front', value=0):
 
     mask = np.full((len(sequences), maxlen), 0)
-    padded_sequences = np.full((len(sequences), maxlen, FEATURE_DIM), value)
+    padded_sequences = np.full((len(sequences), maxlen, FEATURE_DIM+1), value)
 
     for i, seq in enumerate(sequences):
         # post padding
@@ -53,8 +53,8 @@ class time_series_dataset(Dataset):
         """
         self.data_root = data_root
         file_prefix = []
-        self.neg_counter = 4000000000
-        self.pos_counter = 1000000000
+        self.neg_counter = 4000000000000
+        self.pos_counter = 100000000000
         self.test_counter = 6400000000000
         
         if is_train:
@@ -109,69 +109,174 @@ class time_series_dataset(Dataset):
         import json
         with open(self.data_root+prefix+'.json', 'r', encoding='utf-8') as f:
             data_dict = json.load(f)
-
-        feature, mask = pad_sequences(data_dict['features'])
-        feature = torch.from_numpy(feature).float()
-        label = torch.tensor(data_dict['label'], dtype=torch.long)
-        mask = torch.from_numpy(mask).bool()
+        lens = data_dict["lens"]
         ids = data_dict["sn_name"]
-        log_times = data_dict["Window_LogTime"]
-        win_level_features = np.array(data_dict["window_features"])
+        label = torch.tensor(data_dict['label'], dtype=torch.long)
+        
+        # ------------------------------- feature process begin----------------------------
+        last_ce_logtime = [win_tokens[-1][0] for idx, win_tokens in enumerate(data_dict['features'])]
+        win_end_time = data_dict["win_end_time"]
+        feature, mask = pad_sequences(data_dict['features'])
+        sub_win_relative_end_time = np.array([win_end_time[idx] - feature[idx,:,-1] for idx, win_tokens in enumerate(feature)])
+        for idx, arr in enumerate(sub_win_relative_end_time):
+            sub_win_relative_end_time[idx][:len(arr) - lens[idx]] = 0
+        feature[:,:,0] = sub_win_relative_end_time
+        # ------------------------------- feature process endin----------------------------
+        
+        feature = torch.from_numpy(feature).float()
+        mask = torch.from_numpy(mask).bool()
         sample = {'features': feature, 'label': label, 'id': ids, "mask": mask,
-                  "logtime": log_times, "win_level_features": win_level_features}
+                  "last_ce_logtime": last_ce_logtime, "win_end_time": win_end_time, "lens":lens}
         return sample
-
 
 def collate_func(batch_dic):
     mask_batch = []
     fea_batch = []
     label_batch = []
     id_batch = []
-    logtime_batch = []
-    win_level_feature_batch = []
+    sn_idx_batch = []
+    last_ce_logtime_batch = []
+    win_end_time_batch = []
+    lens_batch = []
     for i in range(len(batch_dic)):
         dic = batch_dic[i]
         fea_batch.append(dic['features'])
         label_batch.append(dic['label'])
         id_batch += dic['id']
-        logtime_batch += dic['logtime']
+        last_ce_logtime_batch += dic['last_ce_logtime']
+        win_end_time_batch += dic['win_end_time']
         mask_batch.append(dic['mask'])
-        win_level_feature_batch.append(dic['win_level_features'])
+        lens_batch += dic['lens']
+        for j in range(len(dic['id'])):
+            sn_idx_batch.append([int(dic['id'][j].split("_")[-1])])
 
     res = {}
-    res['features'] = torch.tensor(np.concatenate(fea_batch, axis=0))
-    res['label'] = torch.tensor(np.concatenate(
-        label_batch, axis=0), dtype=torch.long)
+    res['features'] = torch.tensor(np.concatenate(fea_batch, axis=0))[:,:,:-1]
+    res['label'] = torch.tensor(np.concatenate(label_batch, axis=0), dtype=torch.long)
     res['id'] = id_batch
-    res['logtime'] = logtime_batch
-    res['mask'] = torch.tensor(np.concatenate(
-        mask_batch, axis=0), dtype=torch.bool)
-    res['win_level_features'] = torch.tensor(np.concatenate(
-        win_level_feature_batch, axis=0), dtype=torch.float32)
+    res['sn_idx'] = torch.tensor(sn_idx_batch, dtype=torch.float32)
+    res['mask'] = torch.tensor(np.concatenate(mask_batch, axis=0), dtype=torch.bool)
+    res['last_ce_logtime'] = last_ce_logtime_batch
+    res['win_end_time'] = win_end_time_batch
+    res['lens'] = lens_batch
     return res
 
-def collate_func_list(batch_dic):
+class time_series_dataset2(Dataset):
+    def __init__(self, data_root: str, is_train: bool = True, is_aug_pos: bool = False ,is_aug_test = False) :
+        """
+        :param data_root:   数据集路径
+        :param is_train:    True-加载训练集， False-加载测试集
+        :param is_aug_pos:  True-加载增强后的正样本，False-加载原始正样本 
+        """
+        self.data_root = data_root
+        file_prefix = []
+        self.neg_counter = 4000000000000
+        self.pos_counter = 100000000000
+        self.test_counter = 6400000000000
+        
+        if is_train:
+            # 加载负样本窗口
+            neg_file_list = os.listdir(data_root+"/"+"neg_windows_feature")
+            neg_file_list.sort(key=lambda x: (int(x.split(".")[0].split("_")[1])))
+            for file in neg_file_list:
+                if '.json' in file:
+                    file_prefix.append(
+                        "/".join(file.split("/")[:-1])+"neg_windows_feature/" + file.split("/")[-1].split('.')[0])
+                # TODO
+                self.neg_counter -= 1
+                if self.neg_counter <= 0:
+                    break
+
+            # fixed by wly
+            pos_file_path = "pos_windows_feature"
+            if is_aug_pos:
+                pos_file_path = "aug_pos_windows_feature"
+            pos_file_list = os.listdir(data_root + "/" + pos_file_path)
+            pos_file_list.sort(key=lambda x: (int(x.split(".")[0].split("_")[1])))
+            for file in pos_file_list:
+                if '.json' in file:
+                    file_prefix.append(
+                        "/".join(file.split("/")[:-1])+pos_file_path+"/" + file.split("/")[-1].split('.')[0])
+                # TODO
+                self.pos_counter -= 1
+                if self.pos_counter <= 0:
+                    break
+        else:
+            test_file_path = "test_windows_feature"
+            if is_aug_test:
+                test_file_path = "aug_test_windows_feature"
+            test_file_list = os.listdir(data_root+"/"+test_file_path)
+            test_file_list.sort(key=lambda x: (int(x.split(".")[0].split("_")[1])))
+            for file in test_file_list:
+                if '.json' in file:
+                    file_prefix.append(
+                        "/".join(file.split("/")[:-1])+test_file_path + "/" + file.split("/")[-1].split('.')[0])
+                # TODO
+                self.test_counter -= 1
+                if self.test_counter <= 0:
+                    break
+        file_prefix = list(set(file_prefix))
+        self.data = file_prefix
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        prefix = self.data[index]
+        import json
+        with open(self.data_root+prefix+'.json', 'r', encoding='utf-8') as f:
+            data_dict = json.load(f)
+        lens = data_dict["lens"]
+        ids = data_dict["sn_name"]
+        label = torch.tensor(data_dict['label'], dtype=torch.long)
+        last_15m_win_feature =  torch.tensor(data_dict['last_15m_win_feature'], dtype=torch.float32)
+        last_30m_win_feature =  torch.tensor(data_dict['last_30m_win_feature'], dtype=torch.float32)
+
+        # ------------------------------- feature process begin----------------------------
+        last_ce_logtime = [win_tokens[-1][0] for idx, win_tokens in enumerate(data_dict['features'])]
+        win_end_time = data_dict["win_end_time"]
+        feature, mask = pad_sequences(data_dict['features'])
+        sub_win_relative_end_time = np.array([win_end_time[idx] - feature[idx,:,-1] for idx, win_tokens in enumerate(feature)])
+        for idx, arr in enumerate(sub_win_relative_end_time):
+            sub_win_relative_end_time[idx][:len(arr) - lens[idx]] = 0
+        feature[:,:,0] = sub_win_relative_end_time
+        # ------------------------------- feature process endin----------------------------
+        
+        feature = torch.from_numpy(feature).float()
+        mask = torch.from_numpy(mask).bool()
+        sample = {'features': feature, 'label': label, 'id': ids, "mask": mask,
+                  "last_ce_logtime": last_ce_logtime, "win_end_time": win_end_time, "lens":lens, "last_30m_win_feature" :last_30m_win_feature, "last_15m_win_feature":last_15m_win_feature}
+        return sample
+
+def collate_func2(batch_dic):
     mask_batch = []
     fea_batch = []
     label_batch = []
     id_batch = []
-    logtime_batch = []
-    win_level_feature_batch = []
+    last_ce_logtime_batch = []
+    win_end_time_batch = []
+    lens_batch = []
+    window_feature_batch = []
+
     for i in range(len(batch_dic)):
         dic = batch_dic[i]
+        id_batch += dic['id']
+        last_ce_logtime_batch += dic['last_ce_logtime']
+        win_end_time_batch += dic['win_end_time']
+        lens_batch += dic['lens']
         fea_batch.append(dic['features'])
         label_batch.append(dic['label'])
-        id_batch += dic['id']
-        logtime_batch += dic['logtime']
         mask_batch.append(dic['mask'])
-        win_level_feature_batch.append(dic['win_level_features'])
+        window_feature_batch.append(np.concatenate((dic['last_15m_win_feature'], dic['last_30m_win_feature']), axis = 1))
     res = {}
-    res['features'] = np.concatenate(fea_batch, axis=0)
-    res['label'] = np.concatenate(label_batch, axis=0)
+    res['features'] = torch.tensor(np.concatenate(fea_batch, axis=0))[:,:,:-1]
+    res["window_features"] = torch.tensor(np.concatenate(window_feature_batch, axis=0), dtype=torch.float32)
+    res['label'] = torch.tensor(np.concatenate(label_batch, axis=0), dtype=torch.long)
     res['id'] = id_batch
-    res['logtime'] = logtime_batch
-    res['mask'] = np.concatenate(mask_batch, axis=0)
-    res['win_level_features'] = np.concatenate(win_level_feature_batch, axis=0)
+    res['mask'] = torch.tensor(np.concatenate(mask_batch, axis=0), dtype=torch.bool)
+    res['last_ce_logtime'] = last_ce_logtime_batch
+    res['win_end_time'] = win_end_time_batch
+    res['lens'] = lens_batch
     return res
             
 def find_optimal_threshold(y_true, y_pred):
@@ -380,26 +485,81 @@ def Xgboost_infer(model_path):
     pred_df.to_csv("/mnt/zhangrengang/workspace/myMFP/model_pth/submission_xgb.csv", index=None)
 
 def test():
-    ds = time_series_dataset("/backup/home/zhangrengang/workspace/Doc/win30m_feature_with_ecc_typeA/", is_train=True)
+    ds = time_series_dataset("/backup/home/zhangrengang/workspace/STIM_Data1/STIM_win_feature_A/", is_train=True)
     train_size = int((0.9 * len(ds)))
     val_size = int((len(ds) - train_size))
     train_ds, val_ds = torch.utils.data.random_split(
         ds, [train_size, val_size], generator=torch.Generator().manual_seed(223))
 
-    train_loader = DataLoader(train_ds, batch_size=32, num_workers=72, shuffle=True, collate_fn=collate_func)
-    val_loader = DataLoader(val_ds, batch_size=32, num_workers=16, shuffle=False, collate_fn=collate_func)
-
+    train_loader = DataLoader(train_ds, batch_size=16, num_workers=72, shuffle=True, collate_fn=collate_func)
+    val_loader = DataLoader(val_ds, batch_size=16, num_workers=16, shuffle=False, collate_fn=collate_func)
+    counter = 0
+    pos_counter = 0
+    neg_counter = 0
     
     for batch in tqdm(train_loader, desc="Processing train_datset"):
-        print(batch['features'][0])
-        print(batch['win_level_features'][0])
-        print(batch['label'][0])
-        print(batch['mask'][0])
-        print(~batch['mask'][0])
-        print(batch['id'][0])
-        print(batch['logtime'][0])
-        break
+        if counter == 0:
+            print(batch['features'][-1][0])
+            print(batch['mask'][0])
+            print(batch['features'][0][:][:,0]//3600)
+            print(batch['label'][0])
+            print(batch['id'][0])
+            print(batch['last_ce_logtime'][0])
+            print(batch['win_end_time'][0])
+            print(batch['lens'][0])
+            exit(0)
+        counter+=batch['features'].shape[0]
+        pos_counter += batch['label'].sum()
+    for batch in tqdm(val_loader, desc="Processing val_datset"):
+        # print(batch['features'].shape)
+        counter+=batch['features'].shape[0]
+        # print(batch['features'][0][71 - batch['lens'][0] :][:,0])
+        # print(batch['label'][0])
+        # print(batch['mask'][0])
+        # print(~batch['mask'][0])
+        # print(batch['id'][0])
+        # print(batch['last_ce_logtime'][0])
+        # print(batch['win_end_time'][0])
+        # print(batch['lens'][0])
+        # break
+        pos_counter += batch['label'].sum()
+        
+    print(counter, pos_counter, counter - pos_counter)
 
+def test_test():
+    test_ds = time_series_dataset("/backup/home/zhangrengang/workspace/STIM_Data1/STIM_win_feature_A/", is_train=False)
+    test_loader = DataLoader(test_ds, batch_size=16, num_workers=16, shuffle=True, collate_fn=collate_func)
+    counter = 0
+    pos_counter = 0
+    neg_counter = 0
+    for batch in tqdm(test_loader, desc="Processing test_datset"):
+        if counter == 0:
+            print(batch['features'][0][-2:])
+            print(batch['mask'][0])
+            print(batch['features'][0][:][:,0]//3600)
+            print(batch['label'][0])
+            print(batch['id'][0])
+            print(batch['last_ce_logtime'][0])
+            print(batch['win_end_time'][0])
+            print(batch['lens'][0])
+            exit(0)
+        counter+=batch['features'].shape[0]
+        pos_counter += batch['label'].sum()
+    for batch in tqdm(val_loader, desc="Processing val_datset"):
+        # print(batch['features'].shape)
+        counter+=batch['features'].shape[0]
+        # print(batch['features'][0][71 - batch['lens'][0] :][:,0])
+        # print(batch['label'][0])
+        # print(batch['mask'][0])
+        # print(~batch['mask'][0])
+        # print(batch['id'][0])
+        # print(batch['last_ce_logtime'][0])
+        # print(batch['win_end_time'][0])
+        # print(batch['lens'][0])
+        # break
+        pos_counter += batch['label'].sum()
+        
+    print(counter, pos_counter, counter - pos_counter)
 def set_seed():
     import random
     import torch.backends.cudnn as cudnn
@@ -418,6 +578,6 @@ def set_seed():
 
 if __name__ == "__main__":
     set_seed()
-    # test()
-    Xgboost_train()
-    Xgboost_infer("/mnt/zhangrengang/workspace/myMFP/model_pth/XBGClassifier_model.pkl")
+    test_test()
+    # Xgboost_train()
+    # Xgboost_infer("/mnt/zhangrengang/workspace/myMFP/model_pth/XBGClassifier_model.pkl")

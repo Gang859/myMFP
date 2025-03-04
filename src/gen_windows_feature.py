@@ -881,7 +881,7 @@ class NegativeDataGenerator(DataGenerator):
         if not self.ticket_sn_map.get(sn_name):
 
             # 设负样本的时间范围为某段连续的 30 天
-            end_time = self.train_end_date - 30 * ONE_DAY
+            end_time = self.train_end_date - 7 * ONE_DAY
             start_time = self.train_end_date - 60 * ONE_DAY
 
             for i in range(len(windows_dict["end_times"])):
@@ -1388,6 +1388,21 @@ def process_windows(windows_dir: str, processed_df_dir: str, output_dir: str, ch
             json_str = json.dumps(buffer_dict, indent=3)
             out_f.write(json_str)
             out_f.close()
+
+
+'''
+目标：提取1Hour的子窗口特征（作为token），大窗口长度为72Hour（1 Seq： 72 tokens），大窗口步长：6Hour
+方案1：
+    原始数据(单个Sn的feather文件) -> 按照1Hour子窗口提取特征的feather文件（读写快速） -> 大窗口的起止index（json或feather）
+        优点：feather读写快速，节省空间
+             可以修快大窗口长度或步长
+        缺点：加载时读俩文件
+方案二：
+    直接生成大窗口的所有特征的json文件
+        优点：只读取一个数据文件
+        缺点：窗口重合度高，占存储空间
+'''
+
 
 
 if __name__ == "__main__":

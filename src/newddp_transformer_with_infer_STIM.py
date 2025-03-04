@@ -9,14 +9,16 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, confusion_m
 from torch.utils.data import DataLoader
 import math
 import numpy as np
-from window_dataset import time_series_dataset, collate_func, MAX_SEQ_LEN, FEATURE_DIM
+from window_dataset_STIM import time_series_dataset, collate_func, MAX_SEQ_LEN, FEATURE_DIM
 from tqdm.auto import tqdm
 import warnings
 import os
 from utils.logger import Logger
 from lossfuncion.focal_loss import focal_loss
+import pandas as pd
 # from torchvision.ops.focal_loss import sigmoid_focal_loss
 warnings.filterwarnings("ignore")
+
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -163,116 +165,100 @@ class BinaryTransformer2(nn.Module):
         # 分类输出
         return self.classifier(combined).squeeze(-1)
 
+class BinaryTransformer3(nn.Module):
+    def __init__(self, input_dim=FEATURE_DIM, d_model=128, nhead=8,
+                 num_layers=4, max_seq_len=MAX_SEQ_LEN):
+        super().__init__()
+        self.layer_norm1 = nn.LayerNorm(d_model)
+        self.layer_norm2 = nn.LayerNorm(d_model)
 
-# 完整的训练流程
-def train_epoch(model, loader, criterion, optimizer, device):
-    model.train()
-    total_loss = 0
-    loss_list = []
-    all_preds = []
-    all_labels = []
+        self.embedding = nn.Linear(input_dim, d_model)
+        
+        self.pos_encoder = nn.Embedding(max_seq_len, d_model)
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=d_model*4,
+            batch_first=True, dropout=0.2
+        )
 
-    # 创建进度条
-    progress_bar = tqdm(
-        enumerate(loader),
-        total=len(loader),
-        desc=f"Training",
-        bar_format="{l_bar}{bar:20}{r_bar}",
-        dynamic_ncols=True
-    )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
 
-    for batch_idx, batch in progress_bar:
-        inputs = batch['features'].to(device)
-        labels = batch['label'].float().to(device)
-        masks = batch['mask'].to(device)
+        # 改进的分类头
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, 64),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 1)
+        )
 
-        optimizer.zero_grad()
-        outputs = model(inputs, masks)
+    def forward(self, x, mask):
+        # x: (B, L, F), mask: (B, L)
+        seq_len = x.size(1)
 
-        loss = criterion(outputs, labels)
+        # 嵌入层
+        x = self.embedding(x) * math.sqrt(self.embedding.out_features)
 
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
+        # 位置编码
+        positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
+        x = x + self.pos_encoder(positions)
 
-        total_loss += loss.item()
-        loss_list.append(loss.item())
-        probs = torch.sigmoid(outputs).detach()
-        all_preds.extend(probs.cpu().numpy())
-        all_labels.extend(labels.cpu().numpy())
+        # 正则化
+        x = self.layer_norm1(x)
 
-        # 实时更新进度条描述
-        avg_loss = total_loss / (batch_idx + 1)
-        progress_bar.set_postfix({
-            "avg_loss": f"{avg_loss:.4f}",
-            "loss": f"{loss_list[-1]:.4f}",
-            "lr": f"{optimizer.param_groups[0]['lr']:.2e}"
-        })
+        # Transformer处理
+        x = self.transformer(x, src_key_padding_mask=~mask)
 
-    # 关闭进度条
-    progress_bar.close()
+        # 池化层（带mask的平均池化）
+        x = x * mask.unsqueeze(-1)
 
-    # 计算指标
-    avg_loss = total_loss / len(loader)
-    predictions = (np.array(all_preds) > 0.5).astype(int)
-    acc = accuracy_score(all_labels, predictions)
-    f1 = f1_score(all_labels, predictions)
-    auc = roc_auc_score(all_labels, all_preds)
-    tn, fp, fn, tp = confusion_matrix(all_labels, predictions).ravel()
+        pooled = x.sum(dim=1) / mask.sum(dim=1, keepdim=True).clamp(min=1e-9)
 
-    return avg_loss, acc, f1, auc, [int(tn), int(fp), int(fn), int(tp)]
 
-# 评估函数
-def evaluate(model, loader, criterion, device):
-    model.eval()
-    total_loss = 0
-    all_preds = []
-    all_labels = []
+        # 分类输出
+        return self.classifier(pooled).squeeze(-1)
 
-    with torch.no_grad():
-        for batch in loader:
-            inputs = batch['features'].to(device)
-            labels = batch['label'].float().to(device)
-            masks = batch['mask'].to(device)
+class BinaryTransformer4(nn.Module):
+    def __init__(self, input_dim=FEATURE_DIM, d_model=128, nhead=8,
+                 num_layers=4, max_seq_len=MAX_SEQ_LEN):
+        super().__init__()
+        self.layer_norm1 = nn.LayerNorm(d_model)
+        self.layer_norm2 = nn.LayerNorm(d_model)
 
-            outputs = model(inputs, masks)
-            loss = criterion(outputs, labels)
+        self.embedding = nn.Linear(input_dim, d_model)
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=d_model*4,
+            batch_first=True, dropout=0.2
+        )
 
-            total_loss += loss.item()
-            probs = torch.sigmoid(outputs).cpu().numpy()
-            all_preds.extend(probs)
-            all_labels.extend(labels.cpu().numpy())
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
 
-    avg_loss = total_loss / len(loader)
-    predictions = (np.array(all_preds) > 0.5).astype(int)
+        # 改进的分类头
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, 256),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, 1)
+        )
 
-    metrics = {
-        'loss': avg_loss,
-        'accuracy': accuracy_score(all_labels, predictions),
-        'f1': f1_score(all_labels, predictions),
-        'auc': roc_auc_score(all_labels, all_preds)
-    }
-    tn, fp, fn, tp = confusion_matrix(all_labels, predictions).ravel()
-    return metrics, [int(tn), int(fp), int(fn), int(tp)]
+    def forward(self, x, mask):
+        # x: (B, L, F), mask: (B, L)
+        seq_len = x.size(1)
 
-# 推理函数
-def predict(model, samples, device):
-    """
-    支持批量推理
-    Args:
-        samples: list of dicts {'features': tensor(seq_len, 16), 'mask': tensor(seq_len)}
-    Returns:
-        probs: numpy array of probabilities
-    """
-    model.eval()
-    processed = collate_func(samples)  # 使用相同的collate函数
-    inputs = processed['features'].to(device)
-    masks = processed['mask'].to(device)
+        # 嵌入层
+        x = self.embedding(x) 
 
-    with torch.no_grad():
-        logits = model(inputs, masks)
-        probs = torch.sigmoid(logits).cpu().numpy()
-    return probs
+        # 正则化
+        x = self.layer_norm1(x)
+
+        # Transformer处理
+        x = self.transformer(x, src_key_padding_mask=~mask)
+
+        # 正则化
+        x = self.layer_norm2(x)
+
+        # 分类输出
+        return self.classifier(x[:,-1,:]).squeeze(-1)
 
 
 def get_parse_args():
@@ -295,8 +281,6 @@ def get_parse_args():
                         help='gpus_offset.')
     parser.add_argument('--weight_decay', type=float, default=0.00,
                         help='weight_decay.')
-    parser.add_argument('--lr', type=float, default=0.0001,
-                        help='learning rate.')
     parser.add_argument('--load_model', default='',
                         help='path to pretrained model')
     parser.add_argument('--num_iters', type=int, default=-1,
@@ -305,12 +289,15 @@ def get_parse_args():
                         help='batch_size')
     parser.add_argument('--model_type', type=int, default=1,
                         help='1, 2')
-    parser.add_argument('--sn_type', default='A', choices=['A', 'B'],
-                        help='sn_type')
     parser.add_argument('--metric', default='loss',
                         help='metric')
-    parser.add_argument('--find_opt_threadhold', action = 'store_true',
-                        help='find_opt_threadhold')
+    parser.add_argument('--is_train', default=False,
+                        help='is_train')
+    parser.add_argument('--sn_type', default='A', choices=['A', 'B'],
+                        help='sn_type')
+    parser.add_argument('--output_dir', default='',
+                        help='output_dir')
+    # args.sn_type, args.output_dir
     args = parser.parse_args()
     args.gpus_str = args.gpus
     args.gpus = [int(gpu) for gpu in args.gpus.split(',')]
@@ -319,7 +306,7 @@ def get_parse_args():
     args.exp_dir = os.path.join(args.root_dir, 'exp', args.task)
     args.save_dir = os.path.join(args.exp_dir, args.exp_id)
     args.debug_dir = os.path.join(args.save_dir, 'debug')
-    args.random_seed = 3407
+    args.random_seed = 3409
     args.local_rank = 0
     return args
 
@@ -378,8 +365,6 @@ class Trainer(object):
         for iter_id, batch in enumerate(dataset):
             if iter_id >= num_iters:
                 break
-            if len(self.args.gpus) == 1:
-                batch = batch.to(self.args.device)
             data_time.update(time.time() - end)
             # --------------------------- loss calculate
             outputs, labels, loss_stats = model_with_loss(batch)
@@ -410,7 +395,8 @@ class Trainer(object):
                 acc = accuracy_score(all_labels, predictions)
                 f1 = f1_score(all_labels, predictions)
                 auc = roc_auc_score(all_labels, all_preds)
-                tn, fp, fn, tp = confusion_matrix(all_labels, predictions, labels=[0, 1]).ravel()
+                tn, fp, fn, tp = confusion_matrix(
+                    all_labels, predictions, labels=[0, 1]).ravel()
                 tn_list.append(tn)
                 fp_list.append(fp)
                 fn_list.append(fn)
@@ -419,11 +405,11 @@ class Trainer(object):
                 acc_list.append(acc)
                 f1_list.append(f1)
                 Bar.suffix = Bar.suffix + \
-                    '\033[1;31;42m |acc {:}\033[0m'.format(round(acc,4))
+                    '\033[1;31;42m |acc {:}\033[0m'.format(round(acc, 4))
                 Bar.suffix = Bar.suffix + \
-                    '\033[1;31;42m |f1 {:}\033[0m'.format(round(f1,4))
+                    '\033[1;31;42m |f1 {:}\033[0m'.format(round(f1, 4))
                 Bar.suffix = Bar.suffix + \
-                    '\033[1;31;42m |auc {:}\033[0m'.format(round(auc,4))
+                    '\033[1;31;42m |auc {:}\033[0m'.format(round(auc, 4))
                 Bar.suffix = Bar.suffix + \
                     '\033[1;31;42m |tn, fp, fn, tp {tn} {fp} {fn} {tp}\033[0m'.format(
                         tn=int(tn), fp=int(fp), fn=int(fn), tp=int(tp))
@@ -441,24 +427,14 @@ class Trainer(object):
             if np.isnan(auc_list[-1]):
                 ret["auc"] = -1.00
             else:
-                ret["auc"] = round(auc_list[-1],4)
-            ret["acc"] = round(acc_list[-1],4)
-            ret["f1"] = round(f1_list[-1],4)
+                ret["auc"] = round(auc_list[-1], 4)
+            ret["acc"] = round(acc_list[-1], 4)
+            ret["f1"] = round(f1_list[-1], 4)
 
         return ret
 
-    def val(self, epoch, data_loader, local_rank):
-        return self.run_epoch('  val', epoch, data_loader, local_rank)
-
-    def train(self, epoch, data_loader, local_rank):
-        return self.run_epoch('train', epoch, data_loader, local_rank)
-
-    def val_opt_threadhold(self, epoch, data_loader, local_rank):
-        return self.val_for_find_optimal_threadhold_epoch(epoch, data_loader, local_rank)
-    
-    def val_for_find_optimal_threadhold_epoch(self, epoch, dataset, local_rank):
+    def run_infer(self, dataset, local_rank, sn_type, output_dir):
         model_with_loss = self.model_with_loss
-        phase = 'val_opt_threadhold'
         # --------------------------- phase setting
         if len(self.args.gpus) > 1:
             model_with_loss = self.model_with_loss.module
@@ -466,55 +442,50 @@ class Trainer(object):
         torch.cuda.empty_cache()
         # --------------------------- init
         data_time, batch_time = AverageMeter(), AverageMeter()
-        loss_stats = {'loss': 0}
-        avg_loss_stats = {"loss": AverageMeter()}
         num_iters = len(dataset) if args.num_iters < 0 else args.num_iters
-        all_probs = []
-        all_labels = []
         if local_rank == 0:
             bar = Bar('\033[1;31;42m{}/{}'.format(args.task,
                       args.exp_id), max=num_iters)
         end = time.time()
         # --------------------------- iter
+        pos_sn_name_list = []
+        pos_window_logtime_list = []
         for iter_id, batch in enumerate(dataset):
             if iter_id >= num_iters:
                 break
             data_time.update(time.time() - end)
             # --------------------------- loss calculate
-            outputs, labels, loss_stats = model_with_loss(batch)
-            loss = loss_stats["loss"]
+            outputs, sn_names, log_times = model_with_loss(batch, is_train=False)
             probs = torch.sigmoid(outputs).detach()
-            all_probs.extend(probs.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-            # --------------------------- gradient calculate
+            preds = probs.cpu().numpy()
+            for i in range(len(sn_names)):
+                if preds[i] >= 0.5:
+                    pos_sn_name_list.append(sn_names[i])
+                    pos_window_logtime_list.append(log_times[i])
             # --------------------------- log print
             batch_time.update(time.time() - end)
             end = time.time()
             if local_rank == 0:
-                Bar.suffix = '{phase}: [{0}][{1}/{2}]|Tot: {total:} |ETA: {eta:} '.format(
-                    epoch, iter_id, num_iters, phase=phase,
+                Bar.suffix = 'infer: [{0}/{1}]|Tot: {total:} |ETA: {eta:} '.format(
+                    iter_id, num_iters,
                     total=bar.elapsed_td, eta=bar.eta_td)
                 bar.next()
-            del outputs, loss, loss_stats
-        ret = {"best_optimal_threshold" : self.find_optimal_threshold(all_labels, all_probs)}
-        return ret
-            
-    def find_optimal_threshold(self, y_true, y_pred):
-        thresholds = np.linspace(0.1, 0.9, 50)
-        best_f1 = 0
-        best_thresh = 0.5
-        for thresh in thresholds:
-            preds = (y_pred > thresh).astype(int)
-            f1 = f1_score(y_true, preds)
-            acc = accuracy_score(y_true, preds)
-            auc = roc_auc_score(y_true, preds)
-            tn, fp, fn, tp = confusion_matrix(y_true, preds, labels=[0, 1]).ravel()
-            print(f"thresh : {thresh}, F1:{f1}, acc: {acc}, auc: {auc}, [tn, fp, fn, tp] : {tn} {fp} {fn} {tp}")
-            if f1 > best_f1:
-                best_f1 = f1
-                best_thresh = thresh
-        print(f"best_thresh : {best_thresh}, F1 : {best_f1}")
-        return best_thresh
+            del outputs
+        # ------write submission
+        pred_df = pd.DataFrame(
+            {'sn_name': pos_sn_name_list, 'prediction_timestamp': pos_window_logtime_list})
+        pred_df = pred_df.assign(serial_number_type=sn_type)
+        pred_df.to_csv(output_dir, index=None)
+        return None
+
+    def val(self, epoch, data_loader, local_rank):
+        return self.run_epoch('  val', epoch, data_loader, local_rank)
+
+    def train(self, epoch, data_loader, local_rank):
+        return self.run_epoch('train', epoch, data_loader, local_rank)
+
+    def infer(self, data_loader, local_rank, sn_type, output_dir):
+        return self.run_infer(data_loader, local_rank, sn_type, output_dir)
 
 
 class ModelWithLoss(torch.nn.Module):
@@ -523,18 +494,25 @@ class ModelWithLoss(torch.nn.Module):
         self.model = model
         self.gpus = gpus
         self.device = device
-        self.criterion = focal_loss(reduction="mean", gamma = 3, alpha = 0.8)
+        self.criterion = focal_loss(reduction="mean")
+    def forward(self, batch, is_train=True):
+        if is_train:
+            inputs = batch['features'].to(self.device)
+            labels = batch['label'].float().to(self.device)
+            masks = batch['mask'].to(self.device)
 
-    def forward(self, batch):
-        inputs = batch['features'].to(self.device)
-        labels = batch['label'].float().to(self.device)
-        masks = batch['mask'].to(self.device)
-        win_level_features = batch['win_level_features'].to(self.device)
+            outputs = self.model(inputs, masks)
+            loss = self.criterion(outputs, labels)
+            loss_stats = {'loss': loss}
+            return outputs, labels, loss_stats
+        else:
+            inputs = batch['features'].to(self.device)
+            masks = batch['mask'].to(self.device)
+            outputs = self.model(inputs, masks)
+            sn_names = batch['id']
+            log_times = batch['last_ce_logtime']
+            return outputs, sn_names, log_times
 
-        outputs = self.model(inputs, masks, win_level_features)
-        loss = self.criterion(outputs, labels)
-        loss_stats = {'loss': loss}
-        return outputs, labels, loss_stats
 
 def set_random_seed(seed: int) -> None:
     import random
@@ -545,6 +523,7 @@ def set_random_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
+
 
 def save_model(path, epoch, model, optimizer=None):
     if isinstance(model, torch.nn.DataParallel):
@@ -557,17 +536,18 @@ def save_model(path, epoch, model, optimizer=None):
         data['optimizer'] = optimizer.state_dict()
     torch.save(data, path)
 
-def load_model(model, model_path, optimizer=None, local_rank = 0, device='cuda'):
+
+def load_model(model, model_path, optimizer=None, local_rank=0, device='cuda'):
     start_epoch = 0
 
     if device == 'cuda':
-        map  = {'cuda:%d' % 0: 'cuda:%d' % local_rank}
+        map = {'cuda:%d' % 0: 'cuda:%d' % local_rank}
         checkpoint = torch.load(
             model_path, map_location=map)
     else:
         checkpoint = torch.load(
-        model_path, map_location=lambda storage, loc: storage)
-    
+            model_path, map_location=lambda storage, loc: storage)
+
     if local_rank == 0:
         print('loaded {}, epoch {}'.format(model_path, checkpoint['epoch']))
     state_dict_ = checkpoint['state_dict']
@@ -590,9 +570,9 @@ def load_model(model, model_path, optimizer=None, local_rank = 0, device='cuda')
         if k in model_state_dict:
             if state_dict[k].shape != model_state_dict[k].shape:
                 if local_rank == 0:
-                 print('Skip loading parameter {}, required shape{}, '
-                      'loaded shape{}. {}'.format(
-                          k, model_state_dict[k].shape, state_dict[k].shape, msg))
+                    print('Skip loading parameter {}, required shape{}, '
+                          'loaded shape{}. {}'.format(
+                              k, model_state_dict[k].shape, state_dict[k].shape, msg))
                 state_dict[k] = model_state_dict[k]
         else:
             if local_rank == 0:
@@ -601,9 +581,9 @@ def load_model(model, model_path, optimizer=None, local_rank = 0, device='cuda')
         if not (k in state_dict):
             if local_rank == 0:
                 print('No param {}.'.format(k) + msg)
-            state_dict[k] = model_state_dict[k]      
+            state_dict[k] = model_state_dict[k]
     model.load_state_dict(state_dict, strict=False)
-    
+
    # resume optimizer parameters
     if optimizer is not None:
         if 'optimizer' in checkpoint:
@@ -618,7 +598,7 @@ def load_model(model, model_path, optimizer=None, local_rank = 0, device='cuda')
     else:
         return model
 
-# 使用示例
+
 def main(args):
     #################
     # Device
@@ -652,31 +632,41 @@ def main(args):
     #################
     # Dataset
     #################
-    dataset_path = f"/backup/home/zhangrengang/workspace/Doc/win30m_feature_with_ecc_type{args.sn_type}/"
+    dataset_path = f"/backup/home/zhangrengang/workspace/STIM_Data_train05_test_06/STIM_win_feature_{args.sn_type}/"
+    #-------------------------------------training data
     if args.local_rank == 0:
         print('\033[32m====> Using settings {}\033[0m'.format(args))
         print('==> Loading dataset from: ', dataset_path)
-    ds = time_series_dataset(dataset_path, is_train=True)
-    train_size = int((0.9 * len(ds)))
-    val_size = int((len(ds) - train_size))
-    train_ds, val_ds = torch.utils.data.random_split(
-        ds, [train_size, val_size], generator=torch.Generator().manual_seed(223))
+    origin_ds = time_series_dataset(dataset_path, is_train=True, is_aug_test=False, is_aug_pos = True)
+    train_size = int((0.05 * len(origin_ds)))
+    val_size = int((len(origin_ds) - train_size))
+    train_ds, val_ds = torch.utils.data.random_split(origin_ds, [train_size, val_size], generator=torch.Generator().manual_seed(223))
     if args.local_rank == 0:
-        print("Size: ", len(ds))
+        print("Size: ", len(origin_ds))
         print('Splitting the dataset into training and validation sets..')
-        print('# training circuits: ', train_size)
-        print('# validation circuits: ', val_size)
+        print('# training dataset: ', train_size)
+        print('# validation dataset: ', val_size)
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_ds,
                                                                     num_replicas=args.world_size,
                                                                     rank=args.rank)
     val_sampler = torch.utils.data.distributed.DistributedSampler(val_ds,
-                                                                  num_replicas=args.world_size,
-                                                                  rank=args.rank)
+                                                                    num_replicas=args.world_size,
+                                                                    rank=args.rank)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, num_workers=args.num_workers,
-                              shuffle=False, collate_fn=collate_func, sampler=train_sampler)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size//2, num_workers=args.num_workers,
+                                shuffle=False, collate_fn=collate_func, sampler=train_sampler)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, num_workers=args.num_workers,
                             shuffle=False, collate_fn=collate_func, sampler=val_sampler)
 
+    #-------------------------------------testing data
+    test_ds = time_series_dataset(dataset_path, is_train=False, is_aug_test=False)
+    if args.local_rank == 0:
+        print("Size: ", len(test_ds))
+        print('# testing dataset: ', len(test_ds))
+    test_sampler = torch.utils.data.distributed.DistributedSampler(test_ds,
+                                                                    num_replicas=args.world_size,
+                                                                    rank=args.rank)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, num_workers=args.num_workers,
+                                shuffle=False, collate_fn=collate_func, sampler=test_sampler)
     #################
     # Model
     #################
@@ -684,49 +674,53 @@ def main(args):
         model = BinaryTransformer()
     elif args.model_type == 2:
         model = BinaryTransformer2()
-
+    elif args.model_type == 3:
+        model = BinaryTransformer3()
+    elif args.model_type == 4:
+        model = BinaryTransformer4()
     if args.local_rank == 0:
         print('==> Creating model...')
         print(model)
-        
+
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    
+        model.parameters(), lr=5e-4, weight_decay=args.weight_decay)
+
     start_epoch = 0
     if args.load_model != '':
-        model, _, start_epoch = load_model(model, args.load_model, optimizer, args.local_rank, args.device)
+        model, optimizer, start_epoch = load_model(
+            model, args.load_model, optimizer, args.local_rank, args.device)
         mesg = "\033[32m====> Load model from : "+args.load_model+" ...\033[0m"
         print(mesg)
 
     trainer = Trainer(args, model, optimizer)
     trainer.set_device(args.device, args.local_rank, args.gpus)
 
-    if args.local_rank == 0:
-        print('==> Starting training...')
-    
-    if args.find_opt_threadhold:
-        with torch.no_grad():
-            val_loader.sampler.set_epoch(0)
-            log_dict_val = trainer.val_opt_threadhold(0, val_loader, args.local_rank)
-    else:
+    # -----------Training-----------------
+    if args.is_train:
+        if args.local_rank == 0:
+            print('==> Starting training...')
         best = 1e10
         for epoch in range(start_epoch + 1, args.num_epochs + 1):
             mark = 'last'
             train_loader.sampler.set_epoch(epoch)
-            log_dict_train = trainer.train(epoch, train_loader, args.local_rank)
+            log_dict_train = trainer.train(
+                epoch, train_loader, args.local_rank)
             if args.local_rank == 0:
                 int_name_list = ["tn", "fp", "fn", "tp"]
                 logger.write('epoch: {} |'.format(epoch), args.local_rank)
                 logger.write("\n", args.local_rank)
                 logger.write("Train:|", args.local_rank)
                 for k, v in log_dict_train.items():
-                    logger.scalar_summary('train_{}'.format(k), v, epoch, args.local_rank)
+                    logger.scalar_summary('train_{}'.format(
+                        k), v, epoch, args.local_rank)
                     if k not in int_name_list:
-                        logger.write('{} {:4f} | '.format(k, round(v,4)), args.local_rank)
+                        logger.write('{} {:4f} | '.format(
+                            k, round(v, 4)), args.local_rank)
                     else:
                         logger.write('{} {:} | '.format(k, v), args.local_rank)
                 if args.save_intervals > 0 and epoch % args.save_intervals == 0:
-                    save_model(os.path.join(args.save_dir, 'model_{}.pth'.format(mark)), epoch, model, optimizer)
+                    save_model(os.path.join(args.save_dir, 'model_{}.pth'.format(
+                        mark)), epoch, model, optimizer)
             with torch.no_grad():
                 val_loader.sampler.set_epoch(0)
                 log_dict_val = trainer.val(epoch, val_loader, args.local_rank)
@@ -735,20 +729,37 @@ def main(args):
                 logger.write("\n", args.local_rank)
                 logger.write("Eval: |", args.local_rank)
                 for k, v in log_dict_val.items():
-                    logger.scalar_summary('val_{}'.format(k), v, epoch, args.local_rank)
+                    logger.scalar_summary('val_{}'.format(
+                        k), v, epoch, args.local_rank)
                     if k not in int_name_list:
-                        logger.write('{} {:4f} | '.format(k, round(v,4)), args.local_rank)
+                        logger.write('{} {:4f} | '.format(
+                            k, round(v, 4)), args.local_rank)
                     else:
                         logger.write('{} {:} | '.format(k, v), args.local_rank)
                 if log_dict_val[args.metric] < best:
                     best = log_dict_val[args.metric]
-                    save_model(os.path.join(args.save_dir, 'model_best.pth'), epoch, model, optimizer)
+                    save_model(os.path.join(args.save_dir,
+                                            'model_best.pth'), epoch, model, optimizer)
                 else:
-                    save_model(os.path.join(args.save_dir, 'model_last.pth'), epoch, model, optimizer)
+                    save_model(os.path.join(args.save_dir,
+                                            'model_last.pth'), epoch, model, optimizer)
                 logger.write('\n', args.local_rank)
-        if args.local_rank == 0:
-            logger.close()
-    destroy_process_group()
+    # -----------Inferencing--------------
+    else:
+        model.eval()
+        # with torch.no_grad():
+        #     val_loader.sampler.set_epoch(0)
+        #     log_dict_val = trainer.val(0, val_loader, args.local_rank)
+
+        with torch.no_grad():
+            test_loader.sampler.set_epoch(0)
+            args.output_dir = os.path.join(args.save_dir, f"{args.local_rank}_result.csv")
+            trainer.infer(test_loader, args.local_rank,
+                          args.sn_type, args.output_dir)
+
+    if args.local_rank == 0:
+        logger.close()
+    torch.distributed.destroy_process_group()
 
 
 def set_seed(args):
