@@ -2,3 +2,4 @@
 /dump
 /run_log
 *.zip
+/model_path
